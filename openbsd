@@ -158,7 +158,7 @@ class dd:
 
     @classmethod
     def zero(cls, path, size):
-        cmdline = cls.base_cmdline
+        cmdline = cls.base_cmdline.copy()
         cmdline += [ "if=/dev/zero", "of=" + path ]
         cmdline += [ "bs=4K", "count=" + str(256*size) ]
 
@@ -170,7 +170,7 @@ class dd:
         if os.path.exists(path):
             raise RuntimeError(f"refusing to overwrite: {path}")
 
-        cmdline = cls.base_cmdline
+        cmdline = cls.base_cmdline.copy()
         cmdline += [ "if=/dev/random", "of=" + path ]
         cmdline += [ "bs=1K", "count=1" ]
 
@@ -615,10 +615,11 @@ class Qemu:
             self.logger = qemu.logger
 
             self.workdir = tempfile.TemporaryDirectory(prefix=f"{whoami}-qemu-")
+            self.logger.debug(f"workdir: {self.workdir.name}")
             self.process = None
             self.tails = []
 
-            self.cmdline = qemu.base_cmdline
+            self.cmdline = qemu.base_cmdline.copy()
 
             self.cmdline += [ "-m", str(qemu.memory or 512) ]
 
@@ -717,6 +718,7 @@ class Qemu:
                 for t in self.tails:
                     t.cancel()
             finally:
+                self.logger.debug(f"cleanup: {self.workdir.name}")
                 self.workdir.cleanup()
 
     def start(self):
@@ -889,6 +891,25 @@ class Autoinstall:
                 if nic:
                     self.site_file(f"etc/hostname.{nic}", mode=0o640, bytes=lines("inet autoconf"))
 
+            self.site_file("usr/local/bin/wait-for-reorder-kernel", mode=0o755, bytes=lines(
+                "#!/bin/ksh",
+                "",
+                "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do",
+                "    echo 1>&2 'waiting for reorder_kernel to finish...'",
+                "    sleep 5",
+                "done",
+            ))
+
+            rc_shutdown = spec.get("rc_shutdown", {})
+            if rc_shutdown is not False:
+                ls = []
+
+                if rc_shutdown.get("wait_for_reorder_kernel", True):
+                    ls.append("wait-for-reorder-kernel")
+
+                if ls:
+                    self.site_file("etc/rc.shutdown", lines("echo 'running rc.shutdown'", *ls))
+
             rc_firsttime = spec.get("rc_firsttime", {})
             if rc_firsttime:
                 ls = []
@@ -901,26 +922,30 @@ class Autoinstall:
                         "at now <<EOF",
                         "local _tty=/dev/tty00",
                         "echo | tee \\${_tty}",
-                        "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do echo 'Shutdown: waiting for reorder_kernel to finish...' | tee \\${_tty}; sleep 5; done",
+                        "wait-for-reorder-kernel 2>&1 | tee \\${_tty}; sleep 5; done",
                         "shutdown -p now 2>&1 | tee \\${_tty}",
                         "EOF",
                     ]
 
-                self.site_file("etc/rc.firsttime", lines(*ls))
+                if ls:
+                    self.site_file("etc/rc.firsttime", lines("echo 'running rc.firsttime'", *ls))
 
             rc_local = spec.get("rc_local", {})
             if rc_local is not False:
-                ls = ["echo 'running rc.local'"]
+                ls = []
 
-                pub_tag = rc_local.get("ssh-host-pubkey-tag", "ssh pubkey:")
-                ls.append(f'for pk in /etc/ssh/ssh_host_*_key.pub; do echo "{pub_tag}" "$(cat "$pk")"; done')
+                if rc_local.get("show_ssh_pubkeys", True):
+                    pub_tag = rc_local.get("ssh-host-pubkey-tag", "ssh pubkey:")
+                    ls.append(f'for pk in /etc/ssh/ssh_host_*_key.pub; do echo "{pub_tag}" "$(cat "$pk")"; done')
 
                 if rc_local.get("syspatch", True):
                     ls.append("syspatch")
 
                 ls += [ f'cat /{meta_dir}/actions' ]
 
-                self.site_file("etc/rc.local", lines(*ls))
+                if ls:
+                    self.site_file("etc/rc.local", lines("echo 'running rc.local'", *ls))
+
         elif mode == "upgrade":
             post.append(f"resolvd")
 
@@ -1396,7 +1421,7 @@ class Run:
         return self._known_hosts
 
     def ssh_cmdline(self, user=None, identity_file=None):
-        cmdline = situation.ssh
+        cmdline = situation.ssh.copy()
         cmdline += [ "-o", "UserKnownHostsFile=" + self.known_hosts ]
         cmdline += [ "-o", "BatchMode=yes" ]
         cmdline += [ "-p", str(self.ssh_port) ]
