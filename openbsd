@@ -1833,7 +1833,7 @@ def parse_args():
     deps_cmd.add_argument("-a", "--arch")
 
     def add_files_args(p):
-        p.add_argument("--cache", default=env("CACHE"))
+        p.add_argument("--cache", default=env("CACHE", os.path.join(os.path.expanduser("~"), ".cache", whoami)))
         p.add_argument("--mirror", default=env("MIRROR"))
 
     def add_image_args(p, base_image=True):
