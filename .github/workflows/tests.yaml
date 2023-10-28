@@ -18,7 +18,16 @@ jobs:
       image: ${{ matrix.distro }}
     steps:
     - name: Install essentials
-      run: apk add python3
+      run: |
+        if [ "${{ matrix.distro }}" = "alpine:latest" ]; then
+            apk add python3
+        elif [ "${{ matrix.distro }}" = "archlinux:latest" ]; then
+            pacman -Sy
+            pacman -S --noconfirm python
+        else
+            apt-get update
+            apt-get install --yes --no-install-recommends python3
+        fi
 
     - name: Check out repository code
       uses: actions/checkout@v4

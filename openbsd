@@ -201,7 +201,7 @@ class Situation:
         if pacman:
             self._distro = "archlinux"
             self.logger.debug(f"distribution: {self._distro}")
-            self._installer = [ pacman, "-S" ]
+            self._installer = [ pacman, "-S", "--noconfirm" ]
             return
 
         apt_get = shutil.which("apt-get")
@@ -212,7 +212,7 @@ class Situation:
             distro = guess["ID"]
             if distro == "ubuntu":
                 self._distro = distro
-            if distro == "debian":
+            elif distro == "debian":
                 self._distro = distro
             else:
                 raise RuntimeError(f"unconfigured debian-like distro: {distro}")
