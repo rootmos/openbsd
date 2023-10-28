@@ -204,6 +204,22 @@ class Situation:
             self._installer = [ pacman, "-S" ]
             return
 
+        apt_get = shutil.which("apt-get")
+        if apt_get:
+            guess = platform.freedesktop_os_release()
+            self.logger.debug(f"here be Debians: {guess}")
+
+            distro = guess["ID"]
+            if distro == "ubuntu":
+                self._distro = distro
+            if distro == "debian":
+                self._distro = distro
+            else:
+                raise RuntimeError(f"unconfigured debian-like distro: {distro}")
+
+            self._installer = [ apt_get, "install", "--yes", "--no-install-recommends" ]
+            return
+
         raise RuntimeError("unable to figure out distribution")
 
     @property
@@ -228,11 +244,19 @@ class Situation:
                 pkg = "qemu-system-x86_64"
             elif self.distro == "archlinux":
                 pkg = "qemu-system-x86"
+            elif self.distro == "ubuntu":
+                pkg = "qemu-system-x86"
+            elif self.distro == "debian":
+                pkg = "qemu-system-x86"
         elif arch == "x86" or arch == "i386":
             cmd = "qemu-system-i386"
             if self.distro == "alpine":
                 pkg = "qemu-system-i386"
             elif self.distro == "archlinux":
+                pkg = "qemu-system-x86"
+            elif self.distro == "ubuntu":
+                pkg = "qemu-system-x86"
+            elif self.distro == "debian":
                 pkg = "qemu-system-x86"
         else:
             raise RuntimeError(f"{arch} not configured")
@@ -259,6 +283,10 @@ class Situation:
                     pkg = "signify"
                 elif self.distro == "archlinux":
                     pkg = "signify"
+                elif self.distro == "ubuntu":
+                    pkg = "signify"
+                elif self.distro == "debian":
+                    pkg = "signify"
                 raise MissingDependency(command=cmd, package=pkg)
         return self._signify
 
@@ -272,6 +300,10 @@ class Situation:
                     pkg = "openssh-client-default"
                 elif self.distro == "archlinux":
                     pkg = "openssh"
+                elif self.distro == "ubuntu":
+                    pkg = "openssh-client"
+                elif self.distro == "debian":
+                    pkg = "openssh-client"
                 raise MissingDependency(command=cmd, package=pkg)
         return [ self._ssh ]
 
@@ -284,6 +316,10 @@ class Situation:
                 if self.distro == "alpine":
                     pkg = "socat"
                 elif self.distro == "archlinux":
+                    pkg = "socat"
+                elif self.distro == "ubuntu":
+                    pkg = "socat"
+                elif self.distro == "debian":
                     pkg = "socat"
                 raise MissingDependency(command=cmd, package=pkg)
         return [ self._socat ]
