@@ -11,6 +11,7 @@ import http.server
 import io
 import json
 import os
+import platform
 import random
 import re
 import shutil
@@ -59,13 +60,19 @@ class Version:
         self.pub = pub
         self.archs = archs
 
+    def __str__(self):
+        return f"{WhoAmI} {self.long}"
+
     @classmethod
     def add(cls, *args, **kwargs):
         v = cls(*args, **kwargs)
         cls.versions[v.long] = v
+        return v
 
     @classmethod
-    def get(cls, version):
+    def get(cls, version=None):
+        if version is None:
+            return DEFAULT_VERSION
         return cls.versions.get(version)
 
 Version.add(
@@ -81,7 +88,7 @@ Version.add(
     },
 )
 
-Version.add(
+DEFAULT_VERSION = Version.add(
     version = "7.4",
     pub = lines(
         "untrusted comment: openbsd 7.4 public key",
@@ -295,8 +302,8 @@ class Files:
         self.tempdir = None
 
     @staticmethod
-    def from_args(args, version, arch):
-        return Files(version=version, arch=arch, mirror=args.mirror, cache=args.cache)
+    def from_args(args, spec):
+        return Files(version=spec.version, arch=spec.arch, mirror=args.mirror, cache=args.cache)
 
     def __enter__(self):
         if self.cache is None:
@@ -786,7 +793,7 @@ class Autoinstall:
                 f.write("\n")
 
             if mode == "install":
-                line(f"System hostname = {spec['hostname']}")
+                line(f"System hostname = {spec.get('hostname', spec.app)}")
 
                 line(f"Do you expect to run the X Window System = no")
 
@@ -831,8 +838,8 @@ class Autoinstall:
                 line(f"Are you *SURE* your upgrade is complete without 'base{files.version.short}.tgz' = yes")
 
             # TODO
-            line(f"Checksum test for site{files.version.short}.tgz failed. Continue anyway = yes")
-            line(f"Unverified sets: site{files.version.short}.tgz. Continue without verification = yes")
+            line(f"Checksum test for site{spec.version.short}.tgz failed. Continue anyway = yes")
+            line(f"Unverified sets: site{spec.version.short}.tgz. Continue without verification = yes")
             line(f"Cannot determine prefetch area. Continue without verification = yes")
 
         self.sets = os.path.join(webroot, sets_directory)
@@ -849,7 +856,7 @@ class Autoinstall:
             os.symlink(files.get(s), os.path.join(self.sets, s))
 
         self.site_set = tarfile.open(
-            os.path.join(self.sets, f"site{files.version.short}.tgz"),
+            os.path.join(self.sets, f"site{spec.version.short}.tgz"),
             "x:gz",
             format=tarfile.PAX_FORMAT)
 
@@ -860,7 +867,7 @@ class Autoinstall:
         self.logger.info(f"{mode} id: {ok_token}")
 
         meta_dir = "meta"
-        self.site_file(f"{meta_dir}/{mode}.{ok_token}.json", bytes=json.dumps(spec).encode("UTF-8"))
+        self.site_file(f"{meta_dir}/{mode}.{ok_token}.json", bytes=json.dumps(spec.to_dict()).encode("UTF-8"))
 
         with open(__file__, "rb") as f:
             self.site_file(f"{meta_dir}/installer.{ok_token}.py", mode=0o755, bytes=f.read())
@@ -874,7 +881,7 @@ class Autoinstall:
         if mode == "install":
             self.site_file("etc/installurl", lines(files.mirror))
 
-            self.site_file("etc/motd", bytes=lines(f"{WhoAmI} {files.version}"))
+            self.site_file("etc/motd", bytes=lines(f"{WhoAmI} {spec.version}"))
 
             network = spec.get("network")
             if network:
@@ -974,15 +981,15 @@ class Autoinstall:
                     post.append(f"echo 'enabling service: {s}'")
                     post.append(f"rcctl enable {s}")
 
-        post.append(f'echo "{mode} $(date +%FT%T%z) {WhoAmI} {files.version.long} {ok_token}" >> /{meta_dir}/actions')
+        post.append(f'echo "{mode} $(date +%FT%T%z) {WhoAmI} {spec.version.long} {ok_token}" >> /{meta_dir}/actions')
         post.append(f'echo "OK: {ok_token}"')
         self.site_file(f"{mode}.site", mode=0o744, bytes=lines(*post))
 
-        self.qemu = Qemu.from_arch(files.arch)
+        self.qemu = Qemu.from_arch(spec.arch)
         self.qemu.tftp = tftp_root
         self.qemu.bootfile = bootfile
         if mode == "install":
-            self.qemu.hostname = spec["hostname"]
+            self.qemu.hostname = spec.get("hostname", spec.app)
             self.qemu.domainname = spec.get("domainname", "localhost")
             self.qemu.restrict_network = True
         self.qemu.guestfwd.append((("tcp", http_internal_ip, 80), ("tcp", self.httpd.address, self.httpd.port)))
@@ -1245,19 +1252,57 @@ def prepare_image(args, size=None):
 
     return image
 
-def load_specification(args):
-    logger.debug(f"specification: {args.spec}")
-    return BestEffort.read(args.spec)
+class Spec:
+    logger = logging.getLogger(f"{whoami}.spec")
 
-def load_phase_version_arch(args, phase):
-    spec = load_specification(args)
-    return spec.get(phase, {}), Version.get(spec["version"]), spec["arch"]
+    def __init__(self, phase, spec, app, arch, version):
+        self.phase = phase
+        self.spec = spec
+        self.app = app
+        self.arch = arch
+        self.version = version
+
+    def get(self, key, default=None):
+        return self.spec.get(key, default)
+
+    def __getitem__(self, key):
+        return self.spec[key]
+
+    def to_dict(self):
+        return self.spec
+
+    @classmethod
+    def from_args(cls, args, phase):
+        cls.logger.debug(f"loading specification: {args.spec}")
+        spec = BestEffort.read(args.spec)
+
+        app = spec.get("app", env("APP", "foo"))
+        cls.logger.debug(f"app: {app}")
+        version = Version.get(spec.get("version"))
+        cls.logger.debug(f"version: {version}")
+
+        arch = spec.get("arch")
+        if arch is None:
+            m = platform.machine()
+            if m == "x86_64":
+                arch = "amd64"
+            else:
+                raise RuntimeError(f"default arch not configured for machine type: {m}")
+        cls.logger.debug(f"arch: {arch}")
+
+        return Spec(
+            phase = phase,
+            spec = spec.get(phase, {}),
+            app = app,
+            arch = arch,
+            version = version,
+        )
 
 async def do_base(args):
-    base, version, arch = load_phase_version_arch(args, "base")
+    base = Spec.from_args(args, "base")
     image = prepare_image(args, size=base.get("disk", {}).get("size", 2048))
 
-    with Files.from_args(args, version, arch) as files:
+    with Files.from_args(args, base) as files:
         async with Autoinstall(base, files, mode="install") as ai:
             ai.qemu.memory = base.get("memory")
 
@@ -1274,10 +1319,10 @@ async def do_base(args):
                 raise Timeout(what, timeout)
 
 async def do_site(args):
-    site, version, arch = load_phase_version_arch(args, "site")
+    site = Spec.from_args(args, "site")
     image = prepare_image(args)
 
-    with Files.from_args(args, version, arch) as files:
+    with Files.from_args(args, site) as files:
         async with Autoinstall(site, files, mode="upgrade") as ai:
             ai.qemu.memory = site.get("memory")
 
@@ -1297,11 +1342,11 @@ class Run:
     logger = logging.getLogger(f"{whoami}.run")
 
     def __init__(self, args):
-        self.spec, _, arch = load_phase_version_arch(args, "run")
+        self.spec = Spec.from_args(args, "run")
 
         self.host = "localhost"
 
-        self.qemu = Qemu.from_arch(arch)
+        self.qemu = Qemu.from_arch(self.spec.arch)
         self.qemu.disk = args.image
         self.qemu.memory = self.spec.get("memory")
         self.qemu.serial = Qemu.UNIX
@@ -1540,19 +1585,20 @@ class AWS:
         return si
 
     def ami_cmd(self, args):
-        aws, version, arch = load_phase_version_arch(args, "aws")
+        aws = Spec.from_args(args, "aws")
         ami_spec = aws["ami"]
 
         salt = fresh_salt()
         timestamp = datetime.datetime.utcnow().strftime("%Y%M%dT%H%M%SZ")
 
         def render_template(t):
+            t = t.replace("%APP", aws.app)
             t = t.replace("%SALT", salt)
             t = t.replace("%TIMESTAMP", timestamp)
             t = t.replace("%OS", whoami)
             t = t.replace("%os", WhoAmI)
-            t = t.replace("%VERSION", version.short)
-            t = t.replace("%ARCH", arch)
+            t = t.replace("%VERSION", aws.version.short)
+            t = t.replace("%ARCH", aws.arch)
             return t
 
         snapshot_s3 = ami_spec["snapshot"]["s3"]
@@ -1563,27 +1609,29 @@ class AWS:
 
         name = ami_spec.get("name")
         if name is None:
-            name = render_template(ami_spec["name_template"])
+            name = render_template(ami_spec.get("name_template", "%APP-%OS-%VERSION-%SALT"))
         self.logger.debug(f"name: {name}")
 
-        if arch == "amd64":
+        if aws.arch == "amd64":
             architecture = "x86_64"
-        elif arch == "i386":
+        elif aws.arch == "i386":
             architecture = "i386"
-        elif arch == "arm64":
+        elif aws.arch == "arm64":
             architecture = "arm64"
         else:
-            raise RuntimeError("unsupported architecture: {arch}")
+            raise RuntimeError("unsupported architecture: {aws.arch}")
 
         tags = ami_spec.get("tags", {})
+        if "App" not in tags:
+            tags["App"] = aws.app
         if "Name" not in tags:
             tags["Name"] = name
         if "Os" not in tags:
             tags["Os"] = WhoAmI
         if "OsArch" not in tags:
-            tags["OsArch"] = arch
+            tags["OsArch"] = aws.arch
         if "OsVersion" not in tags:
-            tags["OsVersion"] = version.long
+            tags["OsVersion"] = aws.version.long
 
         with self.uploaded_image(args.image, bucket, key):
             si = self.import_snapshot(bucket, key,
@@ -1626,7 +1674,7 @@ class AWS:
 
         tf = ami_spec.get("terraform")
         if tf:
-            default_resource_label = "%OS-%VERSION-%SALT"
+            default_resource_label = "%APP-%OS-%VERSION-%SALT"
             ami = render_template(tf.get("aws_ami", default_resource_label))
             snap = render_template(tf.get("aws_ebs_snapshot", default_resource_label))
             i = ' '*tf.get("indent", 2)
@@ -1745,6 +1793,7 @@ def default_logging_config(args):
             f"{whoami}.qemu": {},
             f"{whoami}.qemu.tail": { "handlers": [ "file" ], "propagate": False },
             f"{whoami}.autoinstall": {},
+            f"{whoami}.spec": {},
             f"{whoami}.aws": {},
         },
     }
@@ -1767,6 +1816,8 @@ def parse_args():
             if os.path.exists(path):
                 default_path = path
                 break
+        if default_path is None:
+            default_path = f"{whoami}.toml"
         p.add_argument("--spec", default=env("SPEC", default_path))
 
     deps_cmd = subparsers.add_parser("deps")

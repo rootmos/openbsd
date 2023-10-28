@@ -1,8 +1,8 @@
+app = "foo"
 version = "7.4"
 arch = "amd64"
 
 [base]
-hostname = "foo"
 disk.size = 4096
 sets = [ "man", "game", "comp" ]
 network.interface = "xnf0"
@@ -52,9 +52,8 @@ hport = 8000
 gport = 80
 
 [aws.ami]
-name_template = "foo-%OS-%VERSION-%SALT"
 snapshot.s3.bucket = "rootmos-infra-artifacts"
-snapshot.s3.key_template = "uploads/foo-%TIMESTAMP-%SALT.img"
+snapshot.s3.key_template = "uploads/%APP-%TIMESTAMP-%SALT.img"
 vmimport_role = "arn:aws:iam::676237474471:role/infra-vmimport"
 
 [aws.ami.terraform]
