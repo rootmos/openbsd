@@ -1,38 +1,14 @@
-name: Run tests
+name: Tests
 on:
-  push:
-    branches:
-      - main
   schedule:
     - cron: "* * 7 * *"
+  workflow_run:
+    workflows: [ Sanity checks ]
+    types: [ completed ]
+    branches: [ main ]
 
 jobs:
-  sanity-example:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Check out repository code
-      uses: actions/checkout@v4
-
-    - name: The example's specification is clean
-      run: scripts/is-clean example/openbsd.toml
-
-  sanity-script:
-    runs-on: ubuntu-latest
-    container:
-      image: alpine:3.18.4
-    steps:
-    - name: Install essentials
-      run: apk add python3
-
-    - name: Check out repository code
-      uses: actions/checkout@v4
-
-    - name: Script is footloose and fancy-free
-      run: scripts/load_module.py openbsd
-
   base:
-    needs:
-      - sanity-script
     strategy:
       matrix:
         version: [ 7.3, 7.4 ]
@@ -79,8 +55,6 @@ jobs:
   example:
     needs:
       - base
-      - sanity-script
-      - sanity-example
     strategy:
       matrix:
         version: [ 7.4 ]
