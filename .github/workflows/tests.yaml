@@ -8,14 +8,34 @@ on:
     branches: [ main ]
 
 jobs:
+  deps:
+    strategy:
+      matrix:
+        distro: [ "alpine:latest", "ubuntu:latest", "debian:latest", "archlinux:latest" ]
+        arch: [ amd64, i386 ]
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.distro }}
+    steps:
+    - name: Install essentials
+      run: apk add python3
+
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: ./openbsd deps --install --arch=${{ matrix.arch }}
+
   base:
+    needs:
+      - deps
     strategy:
       matrix:
         version: [ 7.3, 7.4 ]
         arch: [ amd64, i386 ]
     runs-on: ubuntu-latest
     container:
-      image: alpine:3.18.4
+      image: alpine:latest
     env:
       OPENBSD_CACHE: /tmp/cache
       WORKDIR: /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
@@ -64,7 +84,7 @@ jobs:
       OPENBSD_CACHE: /tmp/cache
       WORKDIR: /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
     container:
-      image: alpine:3.18.4
+      image: alpine:latest
 
     steps:
     - name: Install essentials
