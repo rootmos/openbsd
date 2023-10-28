@@ -891,12 +891,16 @@ class Autoinstall:
                 if nic:
                     self.site_file(f"etc/hostname.{nic}", mode=0o640, bytes=lines("inet autoconf"))
 
-            self.site_file("usr/local/bin/wait-for-reorder-kernel", mode=0o755, bytes=lines(
+            wait_for_reorder_kernel = "/usr/local/bin/wait-for-reorder-kernel"
+            self.site_file(wait_for_reorder_kernel, mode=0o755, bytes=lines(
                 "#!/bin/ksh",
                 "",
+                "_i=5",
+                "_t=0",
                 "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do",
-                "    echo 1>&2 'waiting for reorder_kernel to finish...'",
-                "    sleep 5",
+                "    sleep $_i",
+                "    _t=$((_t + _i))",
+                "    echo 1>&2 'waiting for reorder_kernel to finish... (${_t}s)'",
                 "done",
             ))
 
@@ -905,7 +909,7 @@ class Autoinstall:
                 ls = []
 
                 if rc_shutdown.get("wait_for_reorder_kernel", True):
-                    ls.append("wait-for-reorder-kernel")
+                    ls.append(wait_for_reorder_kernel)
 
                 if ls:
                     self.site_file("etc/rc.shutdown", lines("echo 'running rc.shutdown'", *ls))
