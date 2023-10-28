@@ -6,6 +6,7 @@ arch = "amd64"
 disk.size = 4096
 sets = [ "man", "game", "comp" ]
 network.interface = "xnf0"
+sshd.port = 21230
 
 [site]
 pkgs = [ "awscli" ]
@@ -46,6 +47,9 @@ install = "site/echoip/install"
 src = "site/echoip/service"
 mode = 0o755
 dst = "/etc/rc.d/echoip"
+
+[run]
+sshd.port = 21230
 
 [[run.hostfwd.tcp]]
 hport = 8000

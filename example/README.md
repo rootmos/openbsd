@@ -11,6 +11,7 @@ arch = "amd64"
 disk.size = 4096
 sets = [ "man", "game", "comp" ]
 network.interface = "xnf0"
+sshd.port = 21230
 ```
 
 ```toml
@@ -64,6 +65,9 @@ dst = "/etc/rc.d/echoip"
 ```
 
 ```toml
+[run]
+sshd.port = 21230
+
 [[run.hostfwd.tcp]]
 hport = 8000
 gport = 80
