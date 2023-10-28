@@ -1,0 +1,4 @@
+[[site.patch.doas.files]]
+lines = [ "permit nopass :wheel" ]
+mode = 0o400
+dst = "/etc/doas.conf"

@@ -1,0 +1,3 @@
+[[run.hostfwd.tcp]]
+hport = 8000
+gport = 80

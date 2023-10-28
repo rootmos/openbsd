@@ -1,0 +1,5 @@
+[base]
+hostname = "foo"
+disk.size = 4096
+sets = [ "man", "game", "comp" ]
+network.interface = "xnf0"

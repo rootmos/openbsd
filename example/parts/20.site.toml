@@ -1,0 +1,3 @@
+[site]
+pkgs = [ "awscli" ]
+timeout = 1800

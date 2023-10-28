@@ -1,0 +1,1875 @@
+#!/usr/bin/env python3
+
+import argparse
+import asyncio
+import base64
+import concurrent
+import datetime
+import getpass
+import hashlib
+import http.server
+import io
+import json
+import os
+import random
+import re
+import shutil
+import signal
+import socket
+import stat
+import string
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+import uuid
+
+from dataclasses import dataclass
+from contextlib import contextmanager, asynccontextmanager
+
+try:
+    import boto3
+    with_aws = True
+except ImportError:
+    with_aws = False
+
+WhoAmI = "OpenBSD"
+whoami = WhoAmI.lower()
+
+import logging
+import logging.config
+logger = logging.getLogger(whoami)
+
+def lines(*ls):
+    def gen():
+        for l in ls:
+            yield l.encode("UTF-8")
+            yield b"\n"
+    return b"".join(gen())
+
+DEFAULT_MIRROR = "https://cdn.openbsd.org/pub/OpenBSD"
+
+class Version:
+    versions = {}
+
+    def __init__(self, version, pub, archs):
+        self.long = version
+        self.short = version.replace(".", "")
+        self.pub = pub
+        self.archs = archs
+
+    @classmethod
+    def add(cls, *args, **kwargs):
+        v = cls(*args, **kwargs)
+        cls.versions[v.long] = v
+
+    @classmethod
+    def get(cls, version):
+        return cls.versions.get(version)
+
+Version.add(
+    version = "7.3",
+    pub = lines(
+        "untrusted comment: openbsd 7.3 public key",
+        "RWQS90bYzZ4XFms5z9OodrFABHMQnW6htU+4Tmp88NuQiTEezMm2cQ3K",
+    ),
+    archs = {
+        "amd64": "d04aa5c346a7e327469119072137c393d4412979f9e6f950c144e99a36c812b4",
+        "i386": "304f0fa30f24aac031a625e6e7e8b72d3be3f9b19df0d60976888927aa663741",
+        "arm64": "da8cc4eb51499989e4f073726f06b8070ea125266bf60be95833779a1061810e",
+    },
+)
+
+Version.add(
+    version = "7.4",
+    pub = lines(
+        "untrusted comment: openbsd 7.4 public key",
+        "RWRoyQmAD08ajTqgzK3UcWaVlwaJMckH9/CshU8Md5pN1GoIrcBdTF+c",
+    ),
+    archs = {
+        "amd64": "5a1f94734674e34d3a0293af5f0cdefb57b1c7c5e70149f9cc4021f214967874",
+        "i386": "71c0db5485581bff928c181389252ee797f8c1cac4b03887bba789b57c16fe73",
+        "arm64": "e405804581305a997f804cc7c1551f1aec72889a07c422480b0ec06ff266b1df",
+    },
+)
+
+def env(var, default=None):
+    return os.environ.get(f"{whoami.upper()}_" + var, default)
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+def fresh_salt(n=5):
+    alphabeth = string.ascii_letters + string.digits
+    return ''.join(random.choices(alphabeth, k=n))
+
+class utils:
+    logger = logging.getLogger(f"{whoami}.utils")
+
+    @classmethod
+    def chmod_plus_x(cls, path):
+        umask = os.umask(0)
+        os.umask(umask)
+        cls.logger.debug("chmod +x " + path)
+        os.chmod(path, os.stat(path).st_mode | ((stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH) & ~umask))
+
+    @classmethod
+    def try_tcp(cls, host, port, timeout=1):
+        try:
+            cls.logger.debug(f"trying tcp:{host}:{port}")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((host, port))
+            cls.logger.debug(f"open tcp:{host}:{port}")
+            return True
+        except ConnectionRefusedError:
+            cls.logger.debug(f"connection refused: tcp:{host}:{port}")
+            return False
+        except TimeoutError:
+            cls.logger.debug(f"connection timed out ({timeout}s): tcp:{host}:{port}")
+            return False
+
+    @classmethod
+    async def wait_for_tcp_port(cls, port, host="localhost", interval=1):
+        cls.logger.debug(f"waiting for tcp:{host}:{port}")
+        t = 0
+        while not utils.try_tcp(host, port):
+            await asyncio.sleep(interval)
+            t += interval
+            cls.logger.info(f"waiting for tcp:{host}:{port} ({t}s)")
+        cls.logger.info(f"tcp:{host}:{port} open after {t}s")
+
+    @classmethod
+    def random_ephemeral_port(cls):
+        # https://en.wikipedia.org/wiki/Ephemeral_port#Range
+        return random.randrange(32768, 60999)
+
+class dd:
+    logger = logging.getLogger(f"{whoami}.dd")
+    base_cmdline = [ "dd", "status=none" ]
+
+    @classmethod
+    def zero(cls, path, size):
+        cmdline = cls.base_cmdline
+        cmdline += [ "if=/dev/zero", "of=" + path ]
+        cmdline += [ "bs=4K", "count=" + str(256*size) ]
+
+        cls.logger.debug(f"running: {cmdline}")
+        subprocess.run(cmdline, check=True)
+
+    @classmethod
+    def random(cls, path):
+        if os.path.exists(path):
+            raise RuntimeError(f"refusing to overwrite: {path}")
+
+        cmdline = cls.base_cmdline
+        cmdline += [ "if=/dev/random", "of=" + path ]
+        cmdline += [ "bs=1K", "count=1" ]
+
+        cls.logger.debug(f"running: {cmdline}")
+        subprocess.run(cmdline, check=True)
+
+situation = None
+class Situation:
+    logger = logging.getLogger(f"{whoami}.situation")
+
+    def __init__(self):
+        self._distro = None
+        self._installer = None
+        self._qemu = {}
+        self._signify = None
+        self._ssh = None
+        self._socat = None
+
+    def figure_out_distro_and_installer(self):
+        apk = shutil.which("apk")
+        if apk:
+            self._distro = "alpine"
+            self.logger.debug(f"distribution: {self._distro}")
+            self._installer = [ apk, "add" ]
+            return
+
+        pacman = shutil.which("pacman")
+        if pacman:
+            self._distro = "archlinux"
+            self.logger.debug(f"distribution: {self._distro}")
+            self._installer = [ pacman, "-S" ]
+            return
+
+        raise RuntimeError("unable to figure out distribution")
+
+    @property
+    def distro(self):
+        if self._distro is None:
+            self.figure_out_distro_and_installer()
+        return self._distro
+
+    @property
+    def installer(self):
+        if self._installer is None:
+            self.figure_out_distro_and_installer()
+        return self._installer
+
+    def qemu(self, arch):
+        if arch in self._qemu:
+            return self._qemu[arch]
+
+        if arch == "x86_64" or arch == "amd64":
+            cmd = "qemu-system-x86_64"
+            if self.distro == "alpine":
+                pkg = "qemu-system-x86_64"
+            elif self.distro == "archlinux":
+                pkg = "qemu-system-x86"
+        elif arch == "x86" or arch == "i386":
+            cmd = "qemu-system-i386"
+            if self.distro == "alpine":
+                pkg = "qemu-system-i386"
+            elif self.distro == "archlinux":
+                pkg = "qemu-system-x86"
+        else:
+            raise RuntimeError(f"{arch} not configured")
+
+        path = shutil.which(cmd)
+        if path is None:
+            raise MissingDependency(command=cmd, package=pkg)
+
+        p = subprocess.run([path, "--version"], check=True, text=True, stdout=subprocess.PIPE)
+        for l in p.stdout.splitlines():
+            self.logger.debug(f"qemu; {arch}; {path}: {l.strip()}")
+
+        cmdline = [ path ]
+        self._qemu[arch] = cmdline
+        return cmdline
+
+    @property
+    def signify(self):
+        if self._signify is None:
+            cmd = "signify"
+            self._signify = shutil.which(cmd)
+            if self._signify is None:
+                if self.distro == "alpine":
+                    pkg = "signify"
+                elif self.distro == "archlinux":
+                    pkg = "signify"
+                raise MissingDependency(command=cmd, package=pkg)
+        return self._signify
+
+    @property
+    def ssh(self):
+        if self._ssh is None:
+            cmd = "ssh"
+            self._ssh = shutil.which(cmd)
+            if self._ssh is None:
+                if self.distro == "alpine":
+                    pkg = "openssh-client-default"
+                elif self.distro == "archlinux":
+                    pkg = "openssh"
+                raise MissingDependency(command=cmd, package=pkg)
+        return [ self._ssh ]
+
+    @property
+    def socat(self):
+        if self._socat is None:
+            cmd = "socat"
+            self._socat = shutil.which(cmd)
+            if self._socat is None:
+                if self.distro == "alpine":
+                    pkg = "socat"
+                elif self.distro == "archlinux":
+                    pkg = "socat"
+                raise MissingDependency(command=cmd, package=pkg)
+        return [ self._socat ]
+
+class Files:
+    logger = logging.getLogger(f"{whoami}.files")
+
+    def __init__(self, version, arch, mirror=None, cache=None):
+        self.version = version
+        self.arch = arch
+
+        self.mirror = mirror or DEFAULT_MIRROR
+        self.directory = f"{self.version.long}/{self.arch}"
+
+        self.cache = cache
+        self.tempdir = None
+
+    @staticmethod
+    def from_args(args, version, arch):
+        return Files(version=version, arch=arch, mirror=args.mirror, cache=args.cache)
+
+    def __enter__(self):
+        if self.cache is None:
+            self.tempdir = tempfile.TemporaryDirectory(prefix=f"{whoami}-{self.version.short}-")
+            self.cache = self.tempdir.name
+            self.logger.debug(f"using temporary cache: {self.cache}")
+        else:
+            self.cache = os.path.join(os.path.realpath(self.cache), self.directory)
+            self.logger.debug(f"using existing cache: {self.cache}")
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.tempdir:
+            self.logger.debug(f"cleaning temporary cache: {self.tempdir.name}")
+            self.tempdir.cleanup()
+
+    def fetch(self, path):
+        p = os.path.join(self.cache, path)
+        self.logger.debug(f"fetch: {path} -> {p}")
+        if not os.path.exists(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            url = self.mirror + "/" + self.directory + "/" + path
+            self.logger.debug(f"fetching: {url} -> {p}")
+
+            class Reporter:
+                def __init__(self, logger):
+                    self.logger = logger
+                    self.last_report = 0
+
+                def __call__(self, chunk, size, total):
+                    n = chunk*size
+                    if n >= (self.last_report + (1<<20)):
+                        self.last_report = n
+                        self.logger.info(f"fetching; {url} -> {p}: {min(n,total)}/{total} bytes")
+
+            urllib.request.urlretrieve(url, p, reporthook=Reporter(self.logger))
+        return p
+
+    def get(self, path, verify=True, checksum=True, signature=True):
+        p = self.fetch(path)
+
+        if not verify:
+            return p
+
+        n = os.path.basename(p)
+
+        SHA256 = self.fetch(os.path.join(os.path.dirname(path), "SHA256"))
+        if checksum:
+            with open(SHA256, "rb") as f:
+                digest = hashlib.file_digest(f, "sha256").hexdigest()
+                expected = self.version.archs[self.arch]
+                if digest != expected:
+                    raise RuntimeError("checksum file checksum mismatch: {digest} != {expected}")
+
+            with open(p, "rb") as f:
+                digest = hashlib.file_digest(f, "sha256").hexdigest()
+
+            expected = None
+            with open(SHA256) as f:
+                for l in f.readlines():
+                    (alg, fn, _, d) = l.strip().split()
+                    assert(alg == "SHA256")
+                    if fn == "(" + n + ")":
+                        expected = d
+                        break
+
+            if expected is None:
+                raise RuntimeError(f"unable to find {n} in checksum file")
+
+            if digest != expected:
+                raise RuntimeError(f"checksum mismatch: {digest} != {expected}: {path}")
+
+            self.logger.debug(f"checksum; {path}: {digest}")
+
+        if signature:
+            SHA256_sig = self.fetch(os.path.join(os.path.dirname(path), "SHA256.sig"))
+
+            d = os.path.dirname(p)
+            with tempfile.TemporaryDirectory(prefix=f"{whoami}-") as tmp:
+                pub_fn = os.path.join(tmp, "pub")
+                with open(pub_fn, "wb") as f:
+                    f.write(self.version.pub)
+
+                cmdline = [situation.signify, "-C"]
+                cmdline += [ "-p", pub_fn ]
+                cmdline += [ "-x", SHA256_sig ]
+                cmdline += [ n ]
+
+                self.logger.debug(f"running: {cmdline} (cwd: {d})")
+                subprocess.run(cmdline, check=True, cwd=d, stdout=subprocess.DEVNULL)
+
+        return p
+
+class Httpd:
+    logger = logging.getLogger(f"{whoami}.httpd")
+
+    def __init__(self, webroot):
+        self.webroot = webroot
+
+        self.server = None
+
+    @property
+    def address(self):
+        return self.server.server_name if self.server is not None else None
+
+    @property
+    def port(self):
+        return self.server.server_port if self.server is not None else None
+
+    def bind(self, address=None, port=None):
+        webroot = self.webroot
+        logger = self.logger
+        class RequestHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args):
+                super().__init__(*args, directory=webroot)
+
+            def log_message(self, fmt, *args):
+                logger.debug(fmt % args)
+
+            def handle_error(self, request, client_address):
+                logger.error(f"{client_address}: {request}")
+
+        self.server = http.server.HTTPServer((address or "0.0.0.0", port or 0), RequestHandler)
+        logger.debug(f"binding; {self.address}:{self.port}; {self.webroot}")
+
+        return self
+
+    async def serve(self):
+        try:
+            self.logger.debug(f"serving; {self.address}:{self.port}; {self.webroot}")
+            await asyncio.to_thread(self.server.serve_forever)
+        finally:
+            self.server.shutdown()
+            self.logger.debug("stopped")
+
+class Expect(asyncio.Protocol):
+    logger = logging.getLogger(f"{whoami}.expect")
+    serial = logging.getLogger(f"{whoami}.serial")
+
+    def __init__(self, dialogue=[], path=None, grep=[]):
+        self.path = path
+        self.dialogue = dialogue
+        self.grep = grep
+
+        self.buffer = bytearray()
+        self.state = 0
+
+        self.eof = asyncio.Event()
+
+    class Grep:
+        def __init__(self, pattern, action, line=False):
+            self.line = line
+            self.action = action
+            if not isinstance(pattern, re.Pattern):
+                pattern = re.compile(pattern)
+            self.pattern = pattern
+
+        def __call__(self, string):
+            m = self.pattern.search(string)
+            if m:
+                self.action(m)
+
+    def connection_made(self, transport):
+        self.logger.debug(f"connection made: {self.path}")
+        self.transport = transport
+
+    def connection_lost(self, exc):
+        if exc is None:
+            self.logger.debug(f"connection lost; {self.path}")
+        else:
+            self.logger.warning(f"connection lost; {self.path}: {exc}")
+        self.eof.set()
+
+    def log_line(self, line):
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(f"({self.state}); {self.path}: {line}")
+        else:
+            self.logger.info(line)
+
+        self.serial.info(line)
+
+    def data_received(self, data):
+        for b in data:
+            if b == ord('\n'):
+                continue
+            elif b == ord('\r'):
+                string = str(self.buffer, "UTF-8")
+                for g in self.grep:
+                    if g.line:
+                        g(string)
+                self.log_line(string)
+                self.buffer = bytearray()
+                continue
+
+            self.buffer.append(b)
+
+            string = str(self.buffer, "UTF-8")
+            for g in self.grep:
+                if not g.line:
+                    g(string)
+
+            if self.state >= len(self.dialogue):
+                continue
+
+            (question, answer) = self.dialogue[self.state]
+            if string == question:
+                next_state = self.state + 1
+                self.logger.debug(f"({self.state} -> {next_state}); {self.path}: \"{question}\" -> \"{answer}\"")
+                self.transport.write((answer + "\n").encode("UTF-8"))
+                self.state = next_state
+
+    async def communicate(self, path=None):
+        if path is not None:
+            self.path = path
+        t = 1
+        T = 0
+        while not os.path.exists(path):
+            self.logger.debug(f"waiting for socket ({T}s): {self.path}")
+            await asyncio.sleep(t)
+            T += t
+
+        self.logger.debug(f"{self.path}: hello")
+        loop = asyncio.get_running_loop()
+        transport, protocol = await loop.create_unix_connection(lambda: self, path=self.path)
+        try:
+            await protocol.eof.wait()
+        except asyncio.exceptions.CancelledError:
+            transport.close()
+        self.logger.debug(f"{self.path}: bye")
+
+# TODO: stress-test to make reliable
+class Fakecat:
+    stdio_tcp_src = lines(
+        f"#!{sys.executable}",
+        'import asyncio',
+        'import sys',
+        '',
+        'async def netcat(host, port):',
+        '    loop = asyncio.get_running_loop()',
+        '',
+        '    reader, writer = await asyncio.open_connection(host=host, port=port)',
+        '',
+        '    stdin = asyncio.StreamReader()',
+        '    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(stdin), sys.stdin)',
+        '',
+        '    transport, protocol = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, sys.stdout)',
+        '    stdout = asyncio.StreamWriter(transport, protocol, None, loop)',
+        '',
+        '    async def upstream():',
+        '        while True:',
+        '            buf = await stdin.read(4096)',
+        '            if not len(buf):',
+        '                break',
+        '',
+        '            writer.write(buf)',
+        '            await writer.drain()',
+        '        writer.close()',
+        '        await writer.wait_closed()',
+        '    up = loop.create_task(upstream())',
+        '',
+        '    while True:',
+        '        buf = await reader.read(4096)',
+        '        if not len(buf):',
+        '            break',
+        '',
+        '        stdout.write(buf)',
+        '        await stdout.drain()',
+        '    transport.close()',
+        '',
+        'if __name__ == "__main__":',
+        '    asyncio.run(netcat(sys.argv[1], int(sys.argv[2])))',
+    )
+
+    @classmethod
+    def stdio_tcp(cls, path):
+        with open(path, "xb") as f:
+            f.write(cls.stdio_tcp_src)
+        utils.chmod_plus_x(path)
+        return path
+
+class Qemu:
+    logger = logging.getLogger(f"{whoami}.qemu")
+
+    STDIO = object()
+    UNIX = object()
+
+    def __init__(self, base_cmdline):
+        self.base_cmdline = base_cmdline
+
+        self.reboot = False
+        self.memory = None
+        self.disk = None
+
+        self.hostname = None
+        self.domainname = None
+
+        self.tftp = None
+        self.bootfile = None
+        self.restrict_network = False
+        self.guestfwd = []
+        self.hostfwd = []
+
+        self.display = None
+        self.serial = Qemu.STDIO
+
+    class Instance:
+        def __init__(self, qemu):
+            self.logger = qemu.logger
+
+            self.workdir = tempfile.TemporaryDirectory(prefix=f"{whoami}-qemu-")
+            self.process = None
+            self.tails = []
+
+            self.cmdline = qemu.base_cmdline
+
+            self.cmdline += [ "-m", str(qemu.memory or 512) ]
+
+            if qemu.disk:
+                drive = [ "file=" + qemu.disk ]
+                drive += [ "format=raw" ]
+                self.cmdline += [ "-drive", ",".join(drive) ]
+
+            if not qemu.reboot:
+                self.cmdline += [ "-no-reboot" ]
+
+            nic = [ "user" ]
+            nic += [ "model=e1000" ]
+            if qemu.hostname:
+                nic += [ f"hostname={qemu.hostname}" ]
+            if qemu.domainname:
+                nic += [ f"domainname={qemu.domainname}" ]
+            if qemu.tftp:
+                nic += [ "tftp=" + qemu.tftp ]
+            if qemu.bootfile:
+                nic += [ "bootfile=" + qemu.bootfile ]
+                self.cmdline += [ "-boot", "order=nc" ]
+            if qemu.restrict_network:
+                nic += [ "restrict=on" ]
+
+            for (prot, haddr, hport), (gaddr, gport) in qemu.hostfwd:
+                haddr = socket.gethostbyname(haddr) if haddr else ''
+                nic += [ f"hostfwd={prot or ''}:{haddr}:{hport}-{gaddr or ''}:{gport}" ]
+
+            for (gprot, gaddr, gport), (hprot, haddr, hport) in qemu.guestfwd:
+                if (gprot, hprot) != ("tcp", "tcp"):
+                    raise NotImplementedError
+                nic += [ f"guestfwd={gprot}:{gaddr}:{gport}-cmd:{' '.join(situation.socat)} - tcp:{haddr}:{hport}" ]
+
+            self.cmdline += [ "-nic", ",".join(nic) ]
+
+            self.cmdline += [ "-display", "none" if not qemu.display else qemu.display ]
+
+            if qemu.serial is None:
+                self.cmdline += [ "-serial", "none" ]
+            elif qemu.serial == Qemu.UNIX:
+                self.serial_socket = os.path.join(self.workdir.name, "serial.sock")
+                serial = [ "unix:" + self.serial_socket ]
+                serial += [ "server=on", "wait=on" ]
+                self.cmdline += [ "-serial", ",".join(serial) ]
+            elif qemu.serial == Qemu.STDIO:
+                self.cmdline += [ "-serial", "stdio" ]
+            else:
+                raise NotImplementedError(qemu.serial)
+
+            self.logger.debug(f"preparing qemu: {self.cmdline}")
+
+        async def __aenter__(self):
+            self.process = await asyncio.create_subprocess_exec(self.cmdline[0], *self.cmdline[1:],
+                    stdin = asyncio.subprocess.DEVNULL,
+                    stdout = asyncio.subprocess.PIPE,
+                    stderr = asyncio.subprocess.PIPE)
+            self.logger.debug(f"started qemu; {self.process.pid}: {self.cmdline}")
+
+            async def tail(pipe, kind):
+                logger = logging.getLogger(f"{whoami}.qemu.tail.{kind}")
+                while not pipe.at_eof():
+                    bs = await pipe.readline()
+                    if len(bs):
+                        line = str(bs, "UTF-8").strip()
+                        logger.info(f"({self.process.pid}): " + line)
+
+            tails = []
+            tails.append(asyncio.create_task(tail(self.process.stdout, "stdout")))
+            tails.append(asyncio.create_task(tail(self.process.stderr, "stderr")))
+
+            return self
+
+        @property
+        def pid(self):
+            return self.process.pid
+
+        async def wait(self, timeout=None):
+            try:
+                async with asyncio.timeout(timeout):
+                    return await self.process.wait()
+            except asyncio.CancelledError:
+                self.logger.debug(f"{self.pid}: terminating")
+                self.process.terminate()
+                raise
+            except TimeoutError:
+                self.logger.debug(f"{self.pid}: timed out ({timeout}s)")
+                self.process.terminate()
+                raise
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            try:
+                returncode = await self.process.wait()
+                self.logger.debug(f"{self.pid}; stopped: {returncode}")
+
+                for t in self.tails:
+                    t.cancel()
+            finally:
+                self.workdir.cleanup()
+
+    def start(self):
+        return Qemu.Instance(self)
+
+    @staticmethod
+    def from_arch(arch):
+        return Qemu(base_cmdline = situation.qemu(arch))
+
+class Autoinstall:
+    logger = logging.getLogger(f"{whoami}.autoinstall")
+
+    @dataclass
+    class Ok:
+        token: str
+
+        def __bool__(self):
+            return True
+
+    @dataclass
+    class Err:
+        token: str
+
+        def __bool__(self):
+            return False
+
+    def __init__(self, spec, files, mode):
+        self.workdir = tempfile.TemporaryDirectory(prefix=f"{whoami}-autoinstall-")
+        self.result = None
+
+        bootfile = "auto_" + mode
+        tftp_root = os.path.join(self.workdir.name, "tftp")
+        os.makedirs(tftp_root)
+
+        os.symlink(files.get("pxeboot"), os.path.join(tftp_root, bootfile))
+        os.symlink(files.get("bsd.rd"), os.path.join(tftp_root, "bsd.rd"))
+
+        etc = os.path.join(tftp_root, "etc")
+        os.makedirs(etc)
+
+        dd.random(os.path.join(etc, "random.seed"))
+
+        with open(os.path.join(etc, "boot.conf"), "w") as f:
+            f.write("set tty com0\n")
+            f.write("boot /bsd.rd\n")
+
+        webroot = os.path.join(self.workdir.name, "webroot")
+        os.makedirs(webroot)
+
+        self.httpd = Httpd(webroot).bind()
+        self.httpd_waiter = None
+        http_internal_ip = "10.0.2.100"
+
+        if mode == "install":
+            disklabel = None
+            parts = spec.get("disk", {}).get("partition")
+            if parts:
+                disklabel = "disklabel"
+                with open(os.path.join(webroot, disklabel), "w") as f:
+                    for p in parts:
+                        f.write(f"{p['mount']} {p['size']} {p['free']}\n")
+
+        sets = []
+        if mode == "install":
+            sets += [ "bsd", "base" ]
+        sets += [ "site" ]
+        sets += spec.get("sets", [])
+        sets_directory = "sets"
+
+        self.response_file = os.path.join(webroot, f"auto_{mode}.conf")
+        with open(self.response_file, "x") as f:
+            def line(l):
+                f.write(l)
+                f.write("\n")
+
+            if mode == "install":
+                line(f"System hostname = {spec['hostname']}")
+
+                line(f"Do you expect to run the X Window System = no")
+
+                line(f"Default IPv4 route = none") # TODO: why isn't this handled by default by autoinstall/install.sub? because restrict=true?
+
+                line(f"Password for root account = {'*'*13}")
+
+                user = spec.get("user")
+                if user is None:
+                    name = getpass.getuser()
+                    ssh_pub_key_path = env("SSH_PUBKEY", os.path.expanduser("~/.ssh/id_rsa.pub"))
+                    if not os.path.exists(ssh_pub_key_path):
+                        self.logger.warning(f"ignoring to create default user ({name}) without a SSH public key")
+                    else:
+                        user = { "name": name }
+                        with open(ssh_pub_key_path) as g:
+                            user["ssh_pub_key"] = g.readlines()[0].strip()
+                if user:
+                    name = user['name']
+                    if name == "root":
+                        line(f"Public ssh key for root account = {user['ssh_pub_key']}")
+                        line(f"Allow root ssh login = yes")
+                    else:
+                        line(f"Setup a user = {name}")
+                        line(f"Password for user {name} = {'*'*13}")
+                        line(f"Public ssh key for user {name} = {user['ssh_pub_key']}")
+
+                if disklabel:
+                    line(f"URL to autopartitioning template for disklabel = http://{http_internal_ip}/{disklabel}")
+
+                line(f"What timezone are you in = {spec.get('timezone', 'UTC')}")
+
+            line(f"HTTP Server = http://{http_internal_ip}")
+            line(f"Server directory = /{sets_directory}")
+
+            sets_expr = ' '.join([ s + ("*" if not s.startswith("bsd") else "") for s in sets ])
+            line(f"Set name(s) = -* {sets_expr}")
+
+            if "bsd" not in sets:
+                line(f"Are you *SURE* your upgrade is complete without 'bsd' = yes")
+            if "base" not in sets:
+                line(f"Are you *SURE* your upgrade is complete without 'base{files.version.short}.tgz' = yes")
+
+            # TODO
+            line(f"Checksum test for site{files.version.short}.tgz failed. Continue anyway = yes")
+            line(f"Unverified sets: site{files.version.short}.tgz. Continue without verification = yes")
+            line(f"Cannot determine prefetch area. Continue without verification = yes")
+
+        self.sets = os.path.join(webroot, sets_directory)
+        os.makedirs(self.sets)
+
+        os.symlink(files.get("SHA256.sig", verify=False), os.path.join(self.sets, "SHA256.sig"))
+
+        for s in sets:
+            if s == "site":
+                continue
+            if not s.startswith("bsd"):
+                s += files.version.short
+                s += ".tgz"
+            os.symlink(files.get(s), os.path.join(self.sets, s))
+
+        self.site_set = tarfile.open(
+            os.path.join(self.sets, f"site{files.version.short}.tgz"),
+            "x:gz",
+            format=tarfile.PAX_FORMAT)
+
+        def tokenizer():
+            return str(uuid.uuid4())
+        ok_token, error_token = tokenizer(), tokenizer()
+        self.logger.debug(f"error token: {error_token}")
+        self.logger.info(f"{mode} id: {ok_token}")
+
+        meta_dir = "meta"
+        self.site_file(f"{meta_dir}/{mode}.{ok_token}.json", bytes=json.dumps(spec).encode("UTF-8"))
+
+        with open(__file__, "rb") as f:
+            self.site_file(f"{meta_dir}/installer.{ok_token}.py", mode=0o755, bytes=f.read())
+
+        post = [
+            "set -e",
+            f"rm /{mode}.site",
+            f"echo 'running {mode}.site'",
+        ]
+
+        if mode == "install":
+            self.site_file("etc/installurl", lines(files.mirror))
+
+            self.site_file("etc/motd", bytes=lines(f"{WhoAmI} {files.version}"))
+
+            network = spec.get("network")
+            if network:
+                nic = network.get("interface")
+                if nic:
+                    self.site_file(f"etc/hostname.{nic}", mode=0o640, bytes=lines("inet autoconf"))
+
+            rc_firsttime = spec.get("rc_firsttime", {})
+            if rc_firsttime:
+                ls = []
+
+                if rc_firsttime.get("syspatch", False):
+                    ls.append("syspatch")
+
+                if rc_firsttime.get("reboot", False):
+                    ls += [
+                        "at now <<EOF",
+                        "local _tty=/dev/tty00",
+                        "echo | tee \\${_tty}",
+                        "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do echo 'Shutdown: waiting for reorder_kernel to finish...' | tee \\${_tty}; sleep 5; done",
+                        "shutdown -p now 2>&1 | tee \\${_tty}",
+                        "EOF",
+                    ]
+
+                self.site_file("etc/rc.firsttime", lines(*ls))
+
+            rc_local = spec.get("rc_local", {})
+            if rc_local is not False:
+                ls = ["echo 'running rc.local'"]
+
+                pub_tag = rc_local.get("ssh-host-pubkey-tag", "ssh pubkey:")
+                ls.append(f'for pk in /etc/ssh/ssh_host_*_key.pub; do echo "{pub_tag}" "$(cat "$pk")"; done')
+
+                if rc_local.get("syspatch", True):
+                    ls.append("syspatch")
+
+                ls += [ f'cat /{meta_dir}/actions' ]
+
+                self.site_file("etc/rc.local", lines(*ls))
+        elif mode == "upgrade":
+            post.append(f"resolvd")
+
+            patch_prefix = spec.get("patch", {}).get("prefix", "usr/patch").lstrip("/")
+
+            pkgs = set(spec.get("pkgs", []))
+            services = set(spec.get("services", []))
+            installers = {}
+
+            for n, p in spec.get("patch", {}).items():
+                pkgs |= set(p.get("pkgs", []))
+                if p.get("pkg"):
+                    pkgs.add(p.get("pkg"))
+
+                services |= set(p.get("services", []))
+                if p.get("service"):
+                    services.add(p.get("service"))
+
+                for file in p.get("files", []):
+                    dst = file["dst"].lstrip("/")
+                    bs = None
+                    if "lines" in file:
+                        bs = lines(*file["lines"])
+                    elif "src" in file:
+                        with open(file["src"], "rb") as f:
+                            bs = f.read()
+
+                    self.site_file(dst, bytes=bs,
+                        mode=file.get("mode"),
+                        uid=file.get("uid"), gid=file.get("gid"),
+                        uname=file.get("uname"), gname=file.get("gname"))
+
+                installer = p.get("install")
+                if installer:
+                    patch_dir = p.get("dir", os.path.join(patch_prefix, n))
+                    if isinstance(installer, str):
+                        with open(installer, "rb") as f:
+                            bs = f.read()
+                    else:
+                        bs = lines(*installer)
+
+                    self.site_file(os.path.join(patch_dir, "install"), mode=0o744, bytes=bs)
+                    installers[n] = patch_dir
+
+            if pkgs:
+                self.logger.info(f"packages: {pkgs}")
+                post.append(f"echo 'pkg_add: {' '.join(pkgs)}'")
+                post.append(f"pkg_add -Iv {' '.join(pkgs)}")
+
+            post.append(f"echo 'running installer: {n}'")
+            for n, i in installers.items():
+                post.append(f"echo 'running installer: {n}'")
+                post.append(f"(cd {i} && env PATH=$(getconf PATH) ./install && rm install)")
+
+            if services:
+                self.logger.info(f"services: {services}")
+                for s in services:
+                    post.append(f"echo 'enabling service: {s}'")
+                    post.append(f"rcctl enable {s}")
+
+        post.append(f'echo "{mode} $(date +%FT%T%z) {WhoAmI} {files.version.long} {ok_token}" >> /{meta_dir}/actions')
+        post.append(f'echo "OK: {ok_token}"')
+        self.site_file(f"{mode}.site", mode=0o744, bytes=lines(*post))
+
+        self.qemu = Qemu.from_arch(files.arch)
+        self.qemu.tftp = tftp_root
+        self.qemu.bootfile = bootfile
+        if mode == "install":
+            self.qemu.hostname = spec["hostname"]
+            self.qemu.domainname = spec.get("domainname", "localhost")
+            self.qemu.restrict_network = True
+        self.qemu.guestfwd.append((("tcp", http_internal_ip, 80), ("tcp", self.httpd.address, self.httpd.port)))
+        self.qemu.serial = Qemu.UNIX
+
+        encoded_error_token = ''.join([f"\\0{ord(s):o}" for s in error_token])
+        prompt = "# "
+        dialogue = [
+            ("(I)nstall, (U)pgrade, (A)utoinstall or (S)hell? ", "S"),
+            (prompt, "set -e"),
+            (prompt, f"function err {{ echo \"ERR: $(print \"{encoded_error_token}\")\"; reboot; }}"),
+            (prompt, "trap err EXIT"),
+            (prompt, "local if=$(ifconfig netboot | sed '/^[a-z]/!d;s/:.*//')"),
+            (prompt, "ifconfig $if inet autoconf"),
+            (prompt, "ifconfig $if group dhcp"),
+            (prompt, "function inet_configured { ifconfig $1 | grep -c inet >/dev/null; }"),
+            (prompt, "while ! inet_configured $if; do sleep 1; echo \"waiting for $if...\"; done"),
+            (prompt, f"ftp -vo /auto_{mode}.conf http://{http_internal_ip}/auto_{mode}.conf"),
+            (prompt, f"autoinstall"),
+        ]
+
+        def set_result(r):
+            self.logger.debug(f"result := {r}")
+            self.result = r
+        greps = [
+            Expect.Grep(ok_token, lambda _: set_result(Autoinstall.Ok(ok_token))),
+            Expect.Grep(error_token, lambda _: set_result(Autoinstall.Err(error_token))),
+        ]
+
+        if self.qemu.restrict_network:
+            greps.append(Expect.Grep(
+                r"no address associated with name$",
+                lambda m: self.logger.debug(f"network is restricted: {m}"),
+            ))
+
+        self.expect = Expect(dialogue=dialogue, grep=greps)
+
+    async def __aenter__(self):
+        self.httpd_waiter = asyncio.create_task(self.httpd.serve())
+        return self
+
+    def cleanup(self):
+        self.httpd_waiter.cancel()
+        self.workdir.cleanup()
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.cleanup()
+
+    async def run(self, disk, timeout=None):
+        self.qemu.disk = disk
+
+        self.site_set.close()
+
+        with open(os.path.join(self.sets, "index.txt"), "wb") as f:
+            p = subprocess.run(["ls", "-l"], cwd=self.sets, check=True, stdout=subprocess.PIPE)
+            f.write(p.stdout)
+
+        async with self.qemu.start() as qi:
+            expect = asyncio.create_task(self.expect.communicate(qi.serial_socket))
+            try:
+                await qi.wait(timeout)
+
+                if self.result:
+                    self.logger.info(f"{self.result}")
+                else:
+                    self.logger.error(f"{self.result}")
+
+                return self.result
+            finally:
+                expect.cancel()
+
+    @staticmethod
+    def ls_like_line_of_tar_info(ti):
+        m = ti.mode
+        if ti.type == tarfile.REGTYPE:
+            m |= stat.S_IFREG
+        elif ti.type == tarfile.DIRTYPE:
+            m |= stat.S_IFDIR
+        l = stat.filemode(m)
+        l += " " + str(ti.uname or ti.uid)
+        l += " " + str(ti.gname or ti.gid)
+        l += " " + str(ti.size)
+        l += " " + ti.name
+        return l
+
+    # note that uname/gname is interpreted using the miniroot's passwd file
+    def site_file(self, name, bytes, mode=None, uid=None, gid=None, uname=None, gname=None):
+        ti = tarfile.TarInfo(name)
+        ti.uid = 0 if uid is None else uid
+        ti.gid = 0 if gid is None else gid
+        ti.uname = "" if uname is None else uname
+        ti.gname = "" if gname is None else gname
+        ti.mode = 0o644 if mode is None else mode
+        ti.size = len(bytes)
+        self.logger.debug(f"populating site file: {Autoinstall.ls_like_line_of_tar_info(ti)}")
+        self.site_set.addfile(tarinfo=ti, fileobj=io.BytesIO(bytes))
+
+class ExitWithMessage(Exception):
+    def __init__(self, exit_status, message):
+        super().__init__(message)
+        self.exit_status = exit_status
+        self.message = message
+
+class RefusingToOverwriteImage(ExitWithMessage):
+    def __init__(self, image):
+        super().__init__(3, f"refusing to overwrite image: {image}")
+        self.image = image
+
+class MissingDependency(ExitWithMessage):
+    def __init__(self, command, package):
+        super().__init__(4, f"missing dependency: {command} (install {package}?)")
+        self.command = command
+        self.package = package
+
+class Timeout(ExitWithMessage):
+    def __init__(self, what, timeout):
+        super().__init__(5, f"{what} timed out ({timeout}s)")
+        self.what = what
+        self.timeout = timeout
+
+class Aborted(ExitWithMessage):
+    def __init__(self, what):
+        super().__init__(6, f"{what} aborted")
+        self.what = what
+
+class AutoinstallError(ExitWithMessage):
+    def __init__(self, what):
+        super().__init__(7, f"{what}: autoinstall failed")
+        self.what = what
+
+class BestEffort:
+    class Format:
+        priority = 0
+        binary = False
+        def read(self, path):
+            with open(path, "r" + (self.binary and "b" or "")) as f:
+                return self.load(f)
+
+        def write(self, obj, path, exist_ok=None):
+            m = "w" if exist_ok else "x"
+            m += self.binary and "b" or ""
+            with open(path, m) as f:
+                return self.dump(obj, f)
+
+    class JSON(Format):
+        priority = 0
+        suffix = ".json"
+        mime_type = "application/json"
+        def __init__(self):
+            import json
+            self.load = json.load
+            self.loads = json.loads
+            self.dump = json.dump
+            self.dumps = json.dumps
+
+    class TOML(Format):
+        priority = 10
+        binary = True
+        suffix = ".toml"
+        mime_type = "application/toml"
+        def __init__(self):
+            import tomllib
+            self.load = tomllib.load
+            self.loads = tomllib.loads
+
+    class YAML(Format):
+        priority = 100
+        suffix = ".yaml"
+        mime_type = "application/yaml"
+        def __init__(self):
+            import yaml
+            self.load = lambda f: yaml.safe_load(f, Loader=yaml.Loader)
+            self.loads = self.load
+            self.dump = lambda obj, f: yaml.safe_dump(obj, stream=f, sort_keys=False)
+            self.dumps = lambda obj: self.dump(obj, None)
+
+    _available_formats = None
+
+    @classmethod
+    def available_formats(cls, recheck=None):
+        all_formats = cls.Format.__subclasses__()
+        if recheck or cls._available_formats is None:
+            fmts = []
+            for f in all_formats:
+                try:
+                    fmts.append(f())
+                except ImportError:
+                    pass
+            cls._available_formats = sorted(fmts, key=lambda fmt: fmt.priority, reverse=True)
+        return cls._available_formats
+
+    class UnableToDetermineFormat(Exception):
+        def __init__(self, method, operand):
+            super().__init__(f"unable to determine format by {method}: {operand}")
+
+    @classmethod
+    def by_suffix(cls, path):
+        for fmt in cls.available_formats():
+            if path.endswith(fmt.suffix):
+                return fmt
+        raise cls.UnableToDetermineFormat("suffix", path)
+
+    @classmethod
+    def by_mime_type(cls, mime_type):
+        for fmt in cls.available_formats():
+            if fmt.mime_type == mime_type:
+                return fmt
+        raise cls.UnableToDetermineFormat("mime-type", mime_type)
+
+    @classmethod
+    def read(cls, path, *args, **kwargs):
+        return cls.by_suffix(path).read(path, *args, **kwargs)
+
+    @classmethod
+    def write(cls, obj, path, *args, **kwargs):
+        return cls.by_suffix(path).write(obj, path, *args, **kwargs)
+
+def do_deps(args):
+    pkgs = set()
+
+    if args.arch:
+        try:
+            situation.qemu(args.arch)
+        except MissingDependency as md:
+            pkgs.add(md.package)
+
+    for d in ["signify", "ssh", "socat"]:
+        try:
+            getattr(situation, d)
+        except MissingDependency as md:
+            pkgs.add(md.package)
+
+    sudo = []
+    if args.sudo_askpass:
+        sudo += ["sudo", "--askpass"]
+    elif args.sudo:
+        sudo += ["sudo"]
+
+    if args.install:
+        cmdline = sudo + situation.installer + list(pkgs)
+        logger.debug(f"running: {cmdline}")
+        subprocess.run(cmdline, check=True)
+    else:
+        for d in pkgs:
+            print(d)
+
+def prepare_image(args, size=None):
+    image = args.image
+    exists = os.path.exists(image)
+    if exists and not args.overwrite_image:
+        raise RefusingToOverwriteImage(image)
+
+    if size is not None:
+        if exists:
+            logger.warning(f"overwriting existing image ({size}MiB): {image}")
+        dd.zero(image, size=size)
+    elif args.base_image:
+        logger.info(f"copying: {args.base_image} -> {image}")
+        shutil.copy(args.base_image, image)
+
+    return image
+
+def load_specification(args):
+    logger.debug(f"specification: {args.spec}")
+    return BestEffort.read(args.spec)
+
+def load_phase_version_arch(args, phase):
+    spec = load_specification(args)
+    return spec.get(phase, {}), Version.get(spec["version"]), spec["arch"]
+
+async def do_base(args):
+    base, version, arch = load_phase_version_arch(args, "base")
+    image = prepare_image(args, size=base.get("disk", {}).get("size", 2048))
+
+    with Files.from_args(args, version, arch) as files:
+        async with Autoinstall(base, files, mode="install") as ai:
+            ai.qemu.memory = base.get("memory")
+
+            what = "phase(base)"
+            timeout = base.get("timeout", 20*60)
+            try:
+                if await ai.run(disk=image, timeout=timeout):
+                    eprint(f"{what}: {image}")
+                else:
+                    raise AutoinstallError(what)
+            except asyncio.CancelledError:
+                raise Aborted(what)
+            except TimeoutError:
+                raise Timeout(what, timeout)
+
+async def do_site(args):
+    site, version, arch = load_phase_version_arch(args, "site")
+    image = prepare_image(args)
+
+    with Files.from_args(args, version, arch) as files:
+        async with Autoinstall(site, files, mode="upgrade") as ai:
+            ai.qemu.memory = site.get("memory")
+
+            what = "phase(site)"
+            timeout = site.get("timeout", 15*60)
+            try:
+                if await ai.run(disk=image, timeout=timeout):
+                    eprint(f"{what}: {image}")
+                else:
+                    raise AutoinstallError(what)
+            except asyncio.CancelledError:
+                raise Aborted(what)
+            except TimeoutError:
+                raise Timeout(what, timeout)
+
+class Run:
+    logger = logging.getLogger(f"{whoami}.run")
+
+    def __init__(self, args):
+        self.spec, _, arch = load_phase_version_arch(args, "run")
+
+        self.host = "localhost"
+
+        self.qemu = Qemu.from_arch(arch)
+        self.qemu.disk = args.image
+        self.qemu.memory = self.spec.get("memory")
+        self.qemu.serial = Qemu.UNIX
+
+        self.ssh_port = vars(args).get("ssh_port") or self.spec.get("ssh", {}).get("port", utils.random_ephemeral_port())
+        self.qemu.hostfwd.append((("tcp", self.host, self.ssh_port), (None, 22)))
+
+        for hostfwd in self.spec.get("hostfwd", {}).get("tcp", []):
+            haddr, hport = hostfwd.get("haddr", "0.0.0.0"), hostfwd.get("hport", utils.random_ephemeral_port())
+            gaddr, gport = hostfwd.get("gaddr", None), hostfwd["gport"]
+            logger.info(f"host tcp port forward: ({haddr}, {hport}), ({gaddr}, {gport})")
+            self.qemu.hostfwd.append((("tcp", haddr, hport), (gaddr, gport)))
+
+        self.ssh_pubkeys = {}
+        self.has_ssh_pubkey = asyncio.Event()
+
+        self.workdir = None
+
+        self.booted = asyncio.Event()
+        self.ssh_port_open = None
+        self.halted = None
+
+        self._known_hosts = None
+
+    @property
+    def known_hosts(self):
+        if self._known_hosts is None:
+            self._known_hosts = os.path.join(self.workdir.name, "known_hosts")
+            with open(self._known_hosts, "x") as f:
+                for alg, fpr in self.ssh_pubkeys.items():
+                    f.write(f"[{self.host}]:{self.ssh_port} {alg} {fpr}\n")
+        return self._known_hosts
+
+    def ssh_cmdline(self, user=None, identity_file=None):
+        cmdline = situation.ssh
+        cmdline += [ "-o", "UserKnownHostsFile=" + self.known_hosts ]
+        cmdline += [ "-o", "BatchMode=yes" ]
+        cmdline += [ "-p", str(self.ssh_port) ]
+
+        if identity_file:
+            cmdline += [ "-i", identity_file ]
+
+        user = user or self.spec.get("ssh", {}).get("user")
+
+        cmdline += [ (user + '@' if user else '') + self.host ]
+
+        return cmdline
+
+    async def ssh(self, *args, script=None, **kwargs):
+        await self.ssh_port_open
+
+        cmdline = self.ssh_cmdline(**kwargs) + list(args)
+        if script is None:
+            self.logger.debug(f"running: {cmdline}")
+            p = await asyncio.create_subprocess_exec(cmdline[0], *cmdline[1:])
+        else:
+            with open(script, "rb") as f:
+                b64 = base64.b64encode(f.read())
+
+            cmdline += [ "--" ]
+            cmdline += [ "b64decode -pr | sh" ]
+
+            self.logger.debug(f"running: {cmdline}")
+            p = await asyncio.create_subprocess_exec(cmdline[0], *cmdline[1:], stdin=asyncio.subprocess.PIPE)
+            await p.communicate(input=b64)
+        return await p.wait() == 0
+
+    def ssh_wrapper(self, path=None, **kwargs):
+        cmdline = self.ssh_cmdline(**kwargs)
+
+        ls = [
+            "#!/bin/sh",
+            f'exec {" ".join(cmdline)} "$@"',
+        ]
+
+        p = path or os.path.join(self.workdir.name, "ssh")
+        with open(p, "wb") as f:
+            f.write(lines(*ls))
+        utils.chmod_plus_x(p)
+
+        return p
+
+    @asynccontextmanager
+    async def __call__(self):
+        self.workdir = tempfile.TemporaryDirectory(prefix=f"{whoami}-run-")
+        self.logger.debug(f"workdir: {self.workdir.name}")
+        try:
+            ssh_pubkey_pattern = r"^ssh pubkey:\s(?P<alg>\S+)\s+(?P<fpr>\S+)\s*(?P<comment>\S*)$"
+            def add_ssh_pubkey(m):
+                pk = m.groupdict()
+                self.logger.debug(f"ssh pubkey: {pk['alg']} {pk['fpr']}")
+                self.ssh_pubkeys[pk["alg"]] = pk["fpr"]
+
+            action_pattern = r"^(?P<mode>install|upgrade)\s+(?P<ts>\S+)\s+(?P<os>\S+)\s+(?P<ver>\S+)\s+(?P<id>\S+)$"
+            def action(m):
+                a = m.groupdict()
+                self.logger.debug(f"action: {a}")
+                if a["mode"] == "install":
+                    self.booted.set()
+
+            expect = Expect(grep = [
+                Expect.Grep(ssh_pubkey_pattern, add_ssh_pubkey, line=True),
+                Expect.Grep(action_pattern, action, line=True),
+            ])
+
+            async with self.qemu.start() as qi:
+                expect_waiter = asyncio.create_task(expect.communicate(qi.serial_socket))
+
+                boot_timeout = self.spec.get("boot", {}).get("timeout", 300)
+                async with asyncio.timeout(boot_timeout):
+                    self.logger.info(f"waiting for boot... ({boot_timeout}s)")
+                    await self.booted.wait()
+
+                self.ssh_port_open = asyncio.create_task(utils.wait_for_tcp_port(port=self.ssh_port))
+                self.halted = asyncio.create_task(qi.wait())
+
+                try:
+                    yield self
+                finally:
+                    self.halted.cancel()
+                    expect_waiter.cancel()
+                    self.ssh_port_open.cancel()
+        finally:
+            self.cleanup()
+
+    def cleanup(self):
+        if self.workdir:
+            self.logger.debug(f"cleanup: {self.workdir.name}")
+            self.workdir.cleanup()
+            self.workdir = None
+
+async def do_run(args):
+    async with Run(args)() as r:
+        eprint("boot: " + r.ssh_wrapper(path=args.ssh_wrapper, user=args.user, identity_file=args.identity_file))
+        await r.halted
+
+async def do_ssh(args):
+    async with Run(args)() as r:
+        await r.ssh(user=args.user, identity_file=args.identity_file, script=args.run)
+
+class AWS:
+    logger = logging.getLogger(f"{whoami}.aws")
+
+    def __init__(self):
+        self._clients = {}
+
+    @property
+    def s3(self):
+        return self.client("s3")
+
+    @property
+    def ec2(self):
+        return self.client("ec2")
+
+    def client(self, service):
+        c = self._clients.get(service)
+        if c is None:
+            self._clients[service] = c = boto3.client(service)
+        return c
+
+    @contextmanager
+    def uploaded_image(self, image, bucket, key):
+        s3_url = f"s3://{bucket}/{key}"
+        cleanup = False
+        try:
+            oa = self.s3.get_object_attributes(Bucket=bucket, Key=key, ObjectAttributes=["ObjectParts"])
+            with open(image, "rb") as f:
+                for p in oa["ObjectParts"]["Parts"]:
+                    bs = f.read(p["Size"])
+                    expected_checksum = str(base64.b64encode(hashlib.sha256(bs).digest()), "UTF-8")
+                    actual_checksum = p["ChecksumSHA256"]
+                    if expected_checksum != actual_checksum:
+                        raise RuntimeError(f"disk image part {p['PartNumber']} checksum mismatch: {expected_checksum} != {actual_checksum}")
+
+                if len(f.read()):
+                    raise RuntimeError("file too long")
+
+            self.logger.info(f"already uploaded: {image} -> {s3_url}")
+        except self.s3.exceptions.NoSuchKey:
+            self.logger.info(f"uploading: {image} -> {s3_url}")
+
+            def report(n): # TODO: never called?
+                self.logger.debug(n)
+            self.s3.upload_file(image, bucket, key, Callback=report, ExtraArgs = {
+                "ChecksumAlgorithm": "SHA256"
+            })
+
+            self.logger.debug(f"uploaded: {image} -> {s3_url}")
+            cleanup = True
+
+        try:
+            yield None
+        finally:
+            if cleanup:
+                self.logger.info(f"deleting: {s3_url}")
+                self.s3.delete_object(Bucket=bucket, Key=key)
+            else:
+                self.logger.debug(f"skipping deletion: {s3_url}")
+
+    @staticmethod
+    def role_name_of_arn(arn):
+        return arn.split(":")[-1].removeprefix("role/")
+
+    def import_snapshot(self, bucket, key, vmimport=None, tags={}):
+        if vmimport is None:
+            vmimport = "vmimport"
+        elif vmimport.startswith("arn:"):
+            vmimport = AWS.role_name_of_arn(vmimport)
+
+        self.logger.debug(f"starting snapshot import: s3://{bucket}/{key}")
+        is_rsp = self.ec2.import_snapshot(
+            DiskContainer = {
+                "UserBucket": {
+                    "S3Bucket": bucket,
+                    "S3Key": key,
+                },
+            },
+            RoleName = vmimport,
+        )
+
+        iid = is_rsp["ImportTaskId"]
+        self.logger.debug(f"waiting for snapshot import to complete: {iid}")
+
+        self.ec2.get_waiter("snapshot_imported").wait(ImportTaskIds=[iid])
+
+        dist_rsp = self.ec2.describe_import_snapshot_tasks(ImportTaskIds=[iid])
+        si = None
+        for ist in dist_rsp["ImportSnapshotTasks"]:
+            if ist["ImportTaskId"] == iid:
+                si = ist["SnapshotTaskDetail"]["SnapshotId"]
+                break
+
+        self.ec2.create_tags(Resources=[si], Tags=[ { "Key": k, "Value": v } for k, v in tags.items() ])
+
+        self.logger.info(f"snapshot import: s3://{bucket}/{key} -> {si}")
+        return si
+
+    def ami_cmd(self, args):
+        aws, version, arch = load_phase_version_arch(args, "aws")
+        ami_spec = aws["ami"]
+
+        salt = fresh_salt()
+        timestamp = datetime.datetime.utcnow().strftime("%Y%M%dT%H%M%SZ")
+
+        def render_template(t):
+            t = t.replace("%SALT", salt)
+            t = t.replace("%TIMESTAMP", timestamp)
+            t = t.replace("%OS", whoami)
+            t = t.replace("%os", WhoAmI)
+            t = t.replace("%VERSION", version.short)
+            t = t.replace("%ARCH", arch)
+            return t
+
+        snapshot_s3 = ami_spec["snapshot"]["s3"]
+        bucket = snapshot_s3["bucket"]
+        key = snapshot_s3.get("key")
+        if key is None:
+            key = render_template(snapshot_s3["key_template"])
+
+        name = ami_spec.get("name")
+        if name is None:
+            name = render_template(ami_spec["name_template"])
+        self.logger.debug(f"name: {name}")
+
+        if arch == "amd64":
+            architecture = "x86_64"
+        elif arch == "i386":
+            architecture = "i386"
+        elif arch == "arm64":
+            architecture = "arm64"
+        else:
+            raise RuntimeError("unsupported architecture: {arch}")
+
+        tags = ami_spec.get("tags", {})
+        if "Name" not in tags:
+            tags["Name"] = name
+        if "Os" not in tags:
+            tags["Os"] = WhoAmI
+        if "OsArch" not in tags:
+            tags["OsArch"] = arch
+        if "OsVersion" not in tags:
+            tags["OsVersion"] = version.long
+
+        with self.uploaded_image(args.image, bucket, key):
+            si = self.import_snapshot(bucket, key,
+                vmimport = ami_spec.get("vmimport_role"),
+                tags = tags)
+
+        delete_snapshot = True
+        try:
+            root_device_name = ami_spec.get("root_device_name", "/dev/sda1")
+            logger.debug(f"registering image using: {si}")
+            rsp = self.ec2.register_image(
+                Name = name,
+                Architecture = architecture,
+                VirtualizationType = "hvm",
+                BlockDeviceMappings = [
+                    {
+                        "DeviceName": root_device_name,
+                        "Ebs": {
+                            "DeleteOnTermination": ami_spec.get("delete_ebs_volume_on_termination", True),
+                            "SnapshotId": si,
+                            "VolumeType": "standard",
+                        },
+                    },
+                ],
+                RootDeviceName = root_device_name,
+                SriovNetSupport = "simple",
+            )
+            iid = rsp["ImageId"]
+            delete_snapshot = False
+        finally:
+            if delete_snapshot:
+                self.logger.info(f"deleting snapshot (after failure while register image): {si}")
+                self.ec2.delete_snapshot(SnapshotId=si)
+
+        self.ec2.create_tags(Resources=[iid], Tags=[ { "Key": k, "Value": v } for k, v in tags.items() ])
+
+        self.logger.debug(f"waiting for image to become available: {iid}")
+        self.ec2.get_waiter("image_available").wait(ImageIds=[iid])
+        self.logger.info(f"registered image: {iid} (from {si})")
+
+        tf = ami_spec.get("terraform")
+        if tf:
+            default_resource_label = "%OS-%VERSION-%SALT"
+            ami = render_template(tf.get("aws_ami", default_resource_label))
+            snap = render_template(tf.get("aws_ebs_snapshot", default_resource_label))
+            i = ' '*tf.get("indent", 2)
+
+            tag_lines = [ f'{i}tags = {{' ] + [ f'{i}{i}{k} = "{v}"' for k, v in tags.items() ] + [ f'{i}}}' ]
+
+            ls = []
+
+            if tf.get("local"):
+                ls += [
+                    f'locals {{',
+                    f'{i}{tf["local"]} = aws_ami.{ami}.id',
+                    f'}}',
+                    f'',
+                ]
+
+            ls += [
+                f'import {{',
+                f'{i}to = aws_ami.{ami}',
+                f'{i}id = "{iid}"',
+                f'}}',
+                f'',
+                f'resource "aws_ami" "{ami}" {{',
+                f'{i}name = "{name}"',
+                f'{i}root_device_name = "{root_device_name}"',
+                f'{i}virtualization_type = "hvm"',
+                f'{i}architecture = "{architecture}"',
+                f'{i}ebs_block_device {{',
+                f'{i}{i}snapshot_id = aws_ebs_snapshot.{snap}.id',
+                f'{i}{i}device_name = "{root_device_name}"',
+                f'{i}}}',
+            ] + tag_lines + [
+                f'}}',
+            ]
+
+            ls += [ "" ]
+
+            ls += [
+                f'import {{',
+                f'{i}to = aws_ebs_snapshot.{snap}',
+                f'{i}id = "{si}"',
+                f'}}',
+                f'',
+                f'resource "aws_ebs_snapshot" "{snap}" {{',
+                f'  volume_id = "vol-ffffffff"',
+            ] + tag_lines + [
+                f'}}',
+            ]
+
+            output = args.terraform_output
+            if not output:
+                output = tf.get("output")
+            if output:
+                with open(tf["output"], "wb") as f:
+                    f.write(lines(*ls))
+            else:
+                for l in ls:
+                    print(l)
+        else:
+            eprint(iid)
+
+    @staticmethod
+    def main(args):
+        if args.subcmd == "ami":
+            AWS().ami_cmd(args)
+
+def default_logging_config(args):
+    if args.log_file:
+        file_handler = {
+            "class": "logging.FileHandler",
+            "level": 1,
+            "formatter": "default",
+            "filename": args.log_file,
+        }
+    else:
+        file_handler = { "class": "logging.NullHandler" }
+
+    return {
+        "version": 1,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s:%(name)s:%(levelname)s %(message)s",
+                "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+            },
+            "message-only": {
+                "format": "%(message)s",
+            }
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "level": args.log.upper(),
+                "formatter": "default",
+                "stream": "ext://sys.stderr",
+            },
+            "file": file_handler,
+            "stdout": {
+                "class": "logging.StreamHandler",
+                "level": "INFO",
+                "formatter": "message-only",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            whoami: {
+                "level": 1,
+                "handlers": ["console", "file"],
+            },
+            f"{whoami}.utils": {},
+            f"{whoami}.dd": {},
+            f"{whoami}.situation": {},
+            f"{whoami}.files": {},
+            f"{whoami}.httpd": {},
+            f"{whoami}.expect": {},
+            f"{whoami}.serial": { "handlers": [ "stdout" ], "propagate": False },
+            f"{whoami}.qemu": {},
+            f"{whoami}.qemu.tail": { "handlers": [ "file" ], "propagate": False },
+            f"{whoami}.autoinstall": {},
+            f"{whoami}.aws": {},
+        },
+    }
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+            description="OpenBSD image builder",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument("--log", default=env("LOG_LEVEL", "INFO"), help="set log level")
+    parser.add_argument("--log-file", metavar="FILE", default=env("LOG_FILE"), help="redirect stdout and stderr to FILE")
+    parser.add_argument("--log-config", metavar="FILE", default=env("LOG_CONFIG"), help="load logging configuration from FILE")
+
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
+
+    def add_spec_args(p):
+        default_path = None
+        for fmt in BestEffort.available_formats():
+            path = os.path.join(os.getcwd(), f"{whoami}{fmt.suffix}")
+            if os.path.exists(path):
+                default_path = path
+                break
+        p.add_argument("--spec", default=env("SPEC", default_path))
+
+    deps_cmd = subparsers.add_parser("deps")
+    deps_cmd.add_argument("-i", "--install", action="store_true")
+    deps_cmd.add_argument("-s", "--sudo", action="store_true")
+    deps_cmd.add_argument("-S", "--sudo-askpass", action="store_true")
+    deps_cmd.add_argument("-a", "--arch")
+
+    def add_files_args(p):
+        p.add_argument("--cache", default=env("CACHE"))
+        p.add_argument("--mirror", default=env("MIRROR"))
+
+    def add_image_args(p, base_image=True):
+        if base_image:
+            p.add_argument("-b", "--base-image", metavar="IMAGE")
+        p.add_argument("-f", "--overwrite-image", action="store_true")
+        p.add_argument("image", metavar="IMAGE")
+
+    base_cmd = subparsers.add_parser("base")
+    add_spec_args(base_cmd)
+    add_files_args(base_cmd)
+    add_image_args(base_cmd, base_image=False)
+
+    site_cmd = subparsers.add_parser("site")
+    add_spec_args(site_cmd)
+    add_files_args(site_cmd)
+    add_image_args(site_cmd)
+
+    def add_ssh_args(p):
+        p.add_argument("-i", "--identity-file", default=env("SSH_KEY"))
+        p.add_argument("-u", "--user", default=env("SSH_USER"))
+
+    run_cmd = subparsers.add_parser("run")
+    add_spec_args(run_cmd)
+    add_ssh_args(run_cmd)
+    run_cmd.add_argument("-s", "--ssh-wrapper", metavar="FILE")
+    run_cmd.add_argument("image", metavar="IMAGE")
+
+    ssh_cmd = subparsers.add_parser("ssh")
+    add_spec_args(ssh_cmd)
+    add_ssh_args(ssh_cmd)
+    ssh_cmd.add_argument("-r", "--run", metavar="SCRIPT", default=env("SSH_RUN_SCRIPT"))
+    ssh_cmd.add_argument("image", metavar="IMAGE")
+
+    if with_aws:
+        aws_cmd = subparsers.add_parser("aws")
+        aws_subparsers = aws_cmd.add_subparsers(dest="subcmd", required=True)
+
+        aws_ami_cmd = aws_subparsers.add_parser("ami")
+        aws_ami_cmd.add_argument("--terraform-output", metavar="FILE")
+        aws_ami_cmd.add_argument("image", metavar="IMAGE")
+        add_spec_args(aws_ami_cmd)
+
+    return parser.parse_args()
+
+def run(coro, *args):
+    loop = asyncio.new_event_loop()
+
+    t = loop.create_task(coro(*args))
+
+    def do_graceful_shutdown(s):
+        logger.info(f"triggering graceful shutdown: {s.name}")
+        t.cancel()
+    loop.add_signal_handler(signal.SIGINT, do_graceful_shutdown, signal.SIGINT)
+    loop.add_signal_handler(signal.SIGTERM, do_graceful_shutdown, signal.SIGTERM)
+
+    try:
+        return loop.run_until_complete(t)
+    finally:
+        loop.close()
+
+def main():
+    args = parse_args()
+
+    if args.log_config is None:
+        lc = default_logging_config(args)
+    else:
+        lc = BestEffort.read(args.log_config)
+    logging.config.dictConfig(lc)
+
+    logger.debug(f"args: {args}")
+
+    global situation
+    situation = Situation()
+
+    try:
+        if args.cmd == "deps":
+            do_deps(args)
+        elif args.cmd == "base":
+            run(do_base, args)
+        elif args.cmd == "site":
+            run(do_site, args)
+        elif args.cmd == "run":
+            run(do_run, args)
+        elif args.cmd == "ssh":
+            run(do_ssh, args)
+        elif args.cmd == "aws":
+            AWS.main(args)
+
+        logger.debug("bye!")
+    except ExitWithMessage as e:
+        eprint(e.message)
+        sys.exit(e.exit_status)
+
+if __name__ == "__main__":
+    main()

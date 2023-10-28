@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+
+import os
+import subprocess
+import sys
+import tempfile
+
+if __name__ == "__main__":
+    target = sys.argv[1]
+
+    d, b = os.path.split(target)
+
+    with tempfile.TemporaryDirectory(prefix="is-clean-") as tmp:
+        head = os.path.join(tmp, "head")
+        with open(head, "xb") as f:
+            p = subprocess.run(["git", "show", "HEAD:./"+b], check=True, stdout=subprocess.PIPE, cwd=d)
+            f.write(p.stdout)
+
+        subprocess.run(["make", "-C", d, b], check=True)
+
+        subprocess.run(["diff", target, head], check=True)

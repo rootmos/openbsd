@@ -1,0 +1,13 @@
+#!/bin/ksh
+
+BASE=/usr/patch/echoip
+
+daemon="$BASE/bin/echoip"
+daemon_user=nobody
+TEMPLATE_DIR=$(find "$BASE/pkg/mod/github.com/mpolden" -name html -type d)
+daemon_flags="-l :9000 -H X-Real-IP -r -p -t $TEMPLATE_DIR"
+rc_bg=YES
+
+. /etc/rc.d/rc.subr
+
+rc_cmd $1

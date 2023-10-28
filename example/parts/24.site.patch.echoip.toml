@@ -1,0 +1,9 @@
+[site.patch.echoip]
+pkgs = [ "go" ]
+services = [ "echoip" ]
+install = "site/echoip/install"
+
+[[site.patch.echoip.files]]
+src = "site/echoip/service"
+mode = 0o755
+dst = "/etc/rc.d/echoip"

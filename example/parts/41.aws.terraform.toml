@@ -1,0 +1,3 @@
+[aws.ami.terraform]
+local = "image"
+output = "terraform/openbsd.tf"

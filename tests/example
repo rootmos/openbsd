@@ -1,0 +1,51 @@
+#!/bin/bash
+
+set -o nounset -o pipefail -o errexit
+
+SCRIPT_DIR=$(readlink -f "$0" | xargs dirname)
+. "$SCRIPT_DIR/preamble.sh"
+
+echo 1>&2 "preparing specification"
+cp -v "$SCRIPT_DIR/../example/openbsd.toml" "openbsd.toml"
+
+echo 1>&2 "preparing site files"
+cp -rv "$SCRIPT_DIR/../example/site" "site"
+
+echo 1>&2 "building base image"
+BASE=base.img
+$OPENBSD --log-file=base.log base "$BASE"
+
+echo 1>&2 "building site image"
+SITE=site.img
+$OPENBSD --log-file=site.log site -b "$BASE" "$SITE"
+
+echo 1>&2 "booting image"
+$OPENBSD --log-file=run.log run --ssh-wrapper=ssh "$SITE" &
+OPENBSD_PID=$!
+
+while ! [ -f "ssh" ]; do
+    sleep 5
+    echo 1>&2 "waiting for boot..."
+done
+
+HTTP=http://localhost:8000
+
+echo 1>&2 "testing $HTTP"
+INDEX="index.html"
+while ! wget -qO- "$HTTP" | tee "$INDEX"; do
+    sleep 5
+    echo 1>&2 "waiting for http..."
+done
+
+grep -cq hello "$INDEX"
+
+echo 1>&2 "testing $HTTP/ip/"
+IP=ip
+wget -qO- "$HTTP/ip/" | tee "$IP"
+grep -cq "10.0.2.2" "$IP"
+
+echo 1>&2 "triggering shutdown"
+./ssh -- doas shutdown -p now
+
+echo 1>&2 "waiting for shutdown"
+wait "$OPENBSD_PID"

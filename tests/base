@@ -1,0 +1,36 @@
+#!/bin/bash
+
+set -o nounset -o pipefail -o errexit
+
+SCRIPT_DIR=$(readlink -f "$0" | xargs dirname)
+. "$SCRIPT_DIR/preamble.sh"
+
+cat <<EOF > "openbsd.toml"
+version = "$VERSION"
+arch = "$ARCH"
+
+[base]
+hostname = "foo"
+rc_firsttime.syspatch = false
+rc_local.syspatch = false
+
+[base.user]
+name = "admin"
+ssh_pub_key = "$(cat "$OPENBSD_SSH_PUBKEY")"
+
+[run.ssh]
+user = "admin"
+EOF
+
+BASE=base.img
+$OPENBSD --log-file=base.log base "$BASE"
+
+NOTHING_UP_MY_SLEAVE=$(python -c "import uuid; print(uuid.uuid4())")
+TEST_SCRIPT="test.sh"
+cat <<EOF > "$TEST_SCRIPT"
+echo "$NOTHING_UP_MY_SLEAVE"
+EOF
+
+TEST_OUTPUT="$TEST_SCRIPT.output"
+$OPENBSD --log-file=run.log ssh -r "$TEST_SCRIPT" "$BASE" | tee "$TEST_OUTPUT"
+grep -cq "$NOTHING_UP_MY_SLEAVE" "$TEST_OUTPUT"

@@ -1,0 +1,11 @@
+[site.patch.nginx]
+pkg = "nginx"
+service = "nginx"
+
+[[site.patch.nginx.files]]
+src = "site/index.html"
+dst = "/var/www/htdocs/index.html"
+
+[[site.patch.nginx.files]]
+src = "site/nginx.conf"
+dst = "/etc/nginx/nginx.conf"
