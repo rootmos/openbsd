@@ -900,7 +900,7 @@ class Autoinstall:
                 "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do",
                 "    sleep $_i",
                 "    _t=$((_t + _i))",
-                "    echo 1>&2 'waiting for reorder_kernel to finish... (${_t}s)'",
+                '    echo 1>&2 "waiting for reorder_kernel to finish... (${_t}s)"',
                 "done",
             ))
 
@@ -965,7 +965,7 @@ class Autoinstall:
             for k, v in sshd_settings.items():
                 post.append(f'sed -Ei "s/^#?{k} .*/{k} {v}/" "{sshd_config}"')
 
-            post.append(f'diff "$SSHD_CONFIG_ORIG" "{sshd_config}"')
+            post.append(f'diff "$SSHD_CONFIG_ORIG" "{sshd_config}" || true')
 
         elif mode == "upgrade":
             post.append(f"resolvd")
@@ -1122,7 +1122,7 @@ class Autoinstall:
 
     # note that uname/gname is interpreted using the miniroot's passwd file
     def site_file(self, name, bytes, mode=None, uid=None, gid=None, uname=None, gname=None):
-        ti = tarfile.TarInfo(name)
+        ti = tarfile.TarInfo(name.lstrip("/"))
         ti.uid = 0 if uid is None else uid
         ti.gid = 0 if gid is None else gid
         ti.uname = "" if uname is None else uname
@@ -1415,11 +1415,12 @@ class Run:
         self.ssh_port = vars(args).get("ssh_port") or self.spec.get("ssh", {}).get("port", utils.random_ephemeral_port())
         self.sshd_port = self.spec.get("sshd", {}).get("port", 22)
         self.qemu.hostfwd.append((("tcp", self.host, self.ssh_port), (None, self.sshd_port)))
+        self.logger.info(f"ssh port forward: ({self.host}, {self.ssh_port}) -> {self.sshd_port}")
 
         for hostfwd in self.spec.get("hostfwd", {}).get("tcp", []):
             haddr, hport = hostfwd.get("haddr", "0.0.0.0"), hostfwd.get("hport", utils.random_ephemeral_port())
             gaddr, gport = hostfwd.get("gaddr", None), hostfwd["gport"]
-            logger.info(f"host tcp port forward: ({haddr}, {hport}), ({gaddr}, {gport})")
+            self.logger.info(f"host tcp port forward: ({haddr}, {hport}) -> ({gaddr}, {gport})")
             self.qemu.hostfwd.append((("tcp", haddr, hport), (gaddr, gport)))
 
         self.ssh_pubkeys = {}
