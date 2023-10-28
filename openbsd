@@ -1273,13 +1273,15 @@ class Spec:
 
     @classmethod
     def from_args(cls, args, phase):
-        cls.logger.debug(f"loading specification: {args.spec}")
-        spec = BestEffort.read(args.spec)
+        if os.path.exists(args.spec):
+            cls.logger.debug(f"loading specification: {args.spec}")
+            spec = BestEffort.read(args.spec)
+        else:
+            cls.logger.info(f"running in specification-less mode")
+            spec = {}
 
         app = spec.get("app", env("APP", "foo"))
-        cls.logger.debug(f"app: {app}")
         version = Version.get(spec.get("version"))
-        cls.logger.debug(f"version: {version}")
 
         arch = spec.get("arch")
         if arch is None:
@@ -1288,7 +1290,11 @@ class Spec:
                 arch = "amd64"
             else:
                 raise RuntimeError(f"default arch not configured for machine type: {m}")
-        cls.logger.debug(f"arch: {arch}")
+
+        lvl = logging.INFO if spec == {} else logging.DEBUG
+        cls.logger.log(lvl, f"app: {app}")
+        cls.logger.log(lvl, f"version: {version}")
+        cls.logger.log(lvl, f"arch: {arch}")
 
         return Spec(
             phase = phase,
