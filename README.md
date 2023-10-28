@@ -3,6 +3,12 @@
 
 An [OpenBSD](https://www.openbsd.org/) image builder, or: a love letter to OpenBSD and [Qemu](https://www.qemu.org/) made with blood sweat and tears.
 
+## TL;DR
+```shell
+./openbsd build disk.img
+./openbsd ssh disk.img
+```
+
 ## Design goals
 * configuration-less playground for reluctant hackers
 * audit-trail: specification controls everything

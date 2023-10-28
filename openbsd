@@ -864,7 +864,7 @@ class Autoinstall:
             return str(uuid.uuid4())
         ok_token, error_token = tokenizer(), tokenizer()
         self.logger.debug(f"error token: {error_token}")
-        self.logger.info(f"{mode} id: {ok_token}")
+        self.logger.debug(f"{mode} id: {ok_token}")
 
         meta_dir = "meta"
         self.site_file(f"{meta_dir}/{mode}.{ok_token}.json", bytes=json.dumps(spec.to_dict()).encode("UTF-8"))
@@ -970,7 +970,6 @@ class Autoinstall:
                 post.append(f"echo 'pkg_add: {' '.join(pkgs)}'")
                 post.append(f"pkg_add -Iv {' '.join(pkgs)}")
 
-            post.append(f"echo 'running installer: {n}'")
             for n, i in installers.items():
                 post.append(f"echo 'running installer: {n}'")
                 post.append(f"(cd {i} && env PATH=$(getconf PATH) ./install && rm install)")
@@ -1271,13 +1270,16 @@ class Spec:
     def to_dict(self):
         return self.spec
 
+    def __bool__(self):
+        return bool(self.spec)
+
     @classmethod
-    def from_args(cls, args, phase):
+    def from_args(cls, args, phase, helpful=True):
         if os.path.exists(args.spec):
             cls.logger.debug(f"loading specification: {args.spec}")
             spec = BestEffort.read(args.spec)
         else:
-            cls.logger.info(f"running in specification-less mode")
+            cls.logger.log(logging.INFO if helpful else logging.DEBUG, f"running in specification-less mode")
             spec = {}
 
         app = spec.get("app", env("APP", "foo"))
@@ -1291,7 +1293,7 @@ class Spec:
             else:
                 raise RuntimeError(f"default arch not configured for machine type: {m}")
 
-        lvl = logging.INFO if spec == {} else logging.DEBUG
+        lvl = logging.INFO if spec == {} and helpful else logging.DEBUG
         cls.logger.log(lvl, f"app: {app}")
         cls.logger.log(lvl, f"version: {version}")
         cls.logger.log(lvl, f"arch: {arch}")
@@ -1317,6 +1319,7 @@ async def do_base(args):
             try:
                 if await ai.run(disk=image, timeout=timeout):
                     eprint(f"{what}: {image}")
+                    return image
                 else:
                     raise AutoinstallError(what)
             except asyncio.CancelledError:
@@ -1324,9 +1327,14 @@ async def do_base(args):
             except TimeoutError:
                 raise Timeout(what, timeout)
 
-async def do_site(args):
-    site = Spec.from_args(args, "site")
-    image = prepare_image(args)
+async def do_site(args, image=None):
+    site = Spec.from_args(args, "site", helpful=not image)
+
+    if not site:
+        logger.debug("trivial site configuration: skipping site phase")
+        return image
+
+    image = image or prepare_image(args)
 
     with Files.from_args(args, site) as files:
         async with Autoinstall(site, files, mode="upgrade") as ai:
@@ -1337,6 +1345,7 @@ async def do_site(args):
             try:
                 if await ai.run(disk=image, timeout=timeout):
                     eprint(f"{what}: {image}")
+                    return image
                 else:
                     raise AutoinstallError(what)
             except asyncio.CancelledError:
@@ -1852,6 +1861,11 @@ def parse_args():
     add_files_args(site_cmd)
     add_image_args(site_cmd)
 
+    build_cmd = subparsers.add_parser("build")
+    add_spec_args(build_cmd)
+    add_files_args(build_cmd)
+    add_image_args(build_cmd, base_image=False)
+
     def add_ssh_args(p):
         p.add_argument("-i", "--identity-file", default=env("SSH_KEY"))
         p.add_argument("-u", "--user", default=env("SSH_USER"))
@@ -1912,14 +1926,19 @@ def main():
     try:
         if args.cmd == "deps":
             do_deps(args)
+
         elif args.cmd == "base":
             run(do_base, args)
         elif args.cmd == "site":
             run(do_site, args)
+        elif args.cmd == "build":
+            image = run(do_base, args)
+            run(do_site, args, image)
         elif args.cmd == "run":
             run(do_run, args)
         elif args.cmd == "ssh":
             run(do_ssh, args)
+
         elif args.cmd == "aws":
             AWS.main(args)
 
