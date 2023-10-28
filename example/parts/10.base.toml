@@ -2,3 +2,4 @@
 disk.size = 4096
 sets = [ "man", "game", "comp" ]
 network.interface = "xnf0"
+sshd.port = 21230

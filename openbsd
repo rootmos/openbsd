@@ -158,7 +158,7 @@ class dd:
 
     @classmethod
     def zero(cls, path, size):
-        cmdline = cls.base_cmdline
+        cmdline = cls.base_cmdline.copy()
         cmdline += [ "if=/dev/zero", "of=" + path ]
         cmdline += [ "bs=4K", "count=" + str(256*size) ]
 
@@ -170,7 +170,7 @@ class dd:
         if os.path.exists(path):
             raise RuntimeError(f"refusing to overwrite: {path}")
 
-        cmdline = cls.base_cmdline
+        cmdline = cls.base_cmdline.copy()
         cmdline += [ "if=/dev/random", "of=" + path ]
         cmdline += [ "bs=1K", "count=1" ]
 
@@ -615,10 +615,11 @@ class Qemu:
             self.logger = qemu.logger
 
             self.workdir = tempfile.TemporaryDirectory(prefix=f"{whoami}-qemu-")
+            self.logger.debug(f"workdir: {self.workdir.name}")
             self.process = None
             self.tails = []
 
-            self.cmdline = qemu.base_cmdline
+            self.cmdline = qemu.base_cmdline.copy()
 
             self.cmdline += [ "-m", str(qemu.memory or 512) ]
 
@@ -717,6 +718,7 @@ class Qemu:
                 for t in self.tails:
                     t.cancel()
             finally:
+                self.logger.debug(f"cleanup: {self.workdir.name}")
                 self.workdir.cleanup()
 
     def start(self):
@@ -864,7 +866,7 @@ class Autoinstall:
             return str(uuid.uuid4())
         ok_token, error_token = tokenizer(), tokenizer()
         self.logger.debug(f"error token: {error_token}")
-        self.logger.info(f"{mode} id: {ok_token}")
+        self.logger.debug(f"{mode} id: {ok_token}")
 
         meta_dir = "meta"
         self.site_file(f"{meta_dir}/{mode}.{ok_token}.json", bytes=json.dumps(spec.to_dict()).encode("UTF-8"))
@@ -881,13 +883,36 @@ class Autoinstall:
         if mode == "install":
             self.site_file("etc/installurl", lines(files.mirror))
 
-            self.site_file("etc/motd", bytes=lines(f"{WhoAmI} {spec.version}"))
+            self.site_file("etc/motd", bytes=lines(f"{spec.app} ({WhoAmI} {spec.version})"))
 
             network = spec.get("network")
             if network:
                 nic = network.get("interface")
                 if nic:
                     self.site_file(f"etc/hostname.{nic}", mode=0o640, bytes=lines("inet autoconf"))
+
+            wait_for_reorder_kernel = "/usr/local/bin/wait-for-reorder-kernel"
+            self.site_file(wait_for_reorder_kernel, mode=0o755, bytes=lines(
+                "#!/bin/ksh",
+                "",
+                "_i=5",
+                "_t=0",
+                "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do",
+                "    sleep $_i",
+                "    _t=$((_t + _i))",
+                '    echo 1>&2 "waiting for reorder_kernel to finish... (${_t}s)"',
+                "done",
+            ))
+
+            rc_shutdown = spec.get("rc_shutdown", {})
+            if rc_shutdown is not False:
+                ls = []
+
+                if rc_shutdown.get("wait_for_reorder_kernel", True):
+                    ls.append(wait_for_reorder_kernel)
+
+                if ls:
+                    self.site_file("etc/rc.shutdown", lines("echo 'running rc.shutdown'", *ls))
 
             rc_firsttime = spec.get("rc_firsttime", {})
             if rc_firsttime:
@@ -901,26 +926,47 @@ class Autoinstall:
                         "at now <<EOF",
                         "local _tty=/dev/tty00",
                         "echo | tee \\${_tty}",
-                        "while pgrep -qxf '/bin/ksh .*reorder_kernel'; do echo 'Shutdown: waiting for reorder_kernel to finish...' | tee \\${_tty}; sleep 5; done",
+                        "wait-for-reorder-kernel 2>&1 | tee \\${_tty}; sleep 5; done",
                         "shutdown -p now 2>&1 | tee \\${_tty}",
                         "EOF",
                     ]
 
-                self.site_file("etc/rc.firsttime", lines(*ls))
+                if ls:
+                    self.site_file("etc/rc.firsttime", lines("echo 'running rc.firsttime'", *ls))
 
             rc_local = spec.get("rc_local", {})
             if rc_local is not False:
-                ls = ["echo 'running rc.local'"]
+                ls = []
 
-                pub_tag = rc_local.get("ssh-host-pubkey-tag", "ssh pubkey:")
-                ls.append(f'for pk in /etc/ssh/ssh_host_*_key.pub; do echo "{pub_tag}" "$(cat "$pk")"; done')
+                if rc_local.get("show_ssh_pubkeys", True):
+                    pub_tag = rc_local.get("ssh-host-pubkey-tag", "ssh pubkey:")
+                    ls.append(f'for pk in /etc/ssh/ssh_host_*_key.pub; do echo "{pub_tag}" "$(cat "$pk")"; done')
 
                 if rc_local.get("syspatch", True):
                     ls.append("syspatch")
 
                 ls += [ f'cat /{meta_dir}/actions' ]
 
-                self.site_file("etc/rc.local", lines(*ls))
+                if ls:
+                    self.site_file("etc/rc.local", lines("echo 'running rc.local'", *ls))
+
+            sshd_spec = spec.get("sshd", {})
+            sshd_settings = {}
+            if "port" in sshd_spec:
+                sshd_settings["Port"] = sshd_spec["port"]
+            sshd_settings["PasswordAuthentication"] = "yes" if sshd_spec.get("password_authentication", False) else "no"
+            sshd_settings["KbdInteractiveAuthentication"] = "yes" if sshd_spec.get("kbd_interactive_authentication", False) else "no"
+
+            sshd_config = "/etc/ssh/sshd_config"
+            post += [
+                'SSHD_CONFIG_ORIG=$(mktemp)',
+                f'cp "{sshd_config}" "$SSHD_CONFIG_ORIG"',
+            ]
+            for k, v in sshd_settings.items():
+                post.append(f'sed -Ei "s/^#?{k} .*/{k} {v}/" "{sshd_config}"')
+
+            post.append(f'diff "$SSHD_CONFIG_ORIG" "{sshd_config}" || true')
+
         elif mode == "upgrade":
             post.append(f"resolvd")
 
@@ -970,7 +1016,6 @@ class Autoinstall:
                 post.append(f"echo 'pkg_add: {' '.join(pkgs)}'")
                 post.append(f"pkg_add -Iv {' '.join(pkgs)}")
 
-            post.append(f"echo 'running installer: {n}'")
             for n, i in installers.items():
                 post.append(f"echo 'running installer: {n}'")
                 post.append(f"(cd {i} && env PATH=$(getconf PATH) ./install && rm install)")
@@ -1077,7 +1122,7 @@ class Autoinstall:
 
     # note that uname/gname is interpreted using the miniroot's passwd file
     def site_file(self, name, bytes, mode=None, uid=None, gid=None, uname=None, gname=None):
-        ti = tarfile.TarInfo(name)
+        ti = tarfile.TarInfo(name.lstrip("/"))
         ti.uid = 0 if uid is None else uid
         ti.gid = 0 if gid is None else gid
         ti.uname = "" if uname is None else uname
@@ -1271,15 +1316,20 @@ class Spec:
     def to_dict(self):
         return self.spec
 
+    def __bool__(self):
+        return bool(self.spec)
+
     @classmethod
-    def from_args(cls, args, phase):
-        cls.logger.debug(f"loading specification: {args.spec}")
-        spec = BestEffort.read(args.spec)
+    def from_args(cls, args, phase, helpful=True):
+        if os.path.exists(args.spec):
+            cls.logger.debug(f"loading specification: {args.spec}")
+            spec = BestEffort.read(args.spec)
+        else:
+            cls.logger.log(logging.INFO if helpful else logging.DEBUG, f"running in specification-less mode")
+            spec = {}
 
         app = spec.get("app", env("APP", "foo"))
-        cls.logger.debug(f"app: {app}")
         version = Version.get(spec.get("version"))
-        cls.logger.debug(f"version: {version}")
 
         arch = spec.get("arch")
         if arch is None:
@@ -1288,7 +1338,11 @@ class Spec:
                 arch = "amd64"
             else:
                 raise RuntimeError(f"default arch not configured for machine type: {m}")
-        cls.logger.debug(f"arch: {arch}")
+
+        lvl = logging.INFO if spec == {} and helpful else logging.DEBUG
+        cls.logger.log(lvl, f"app: {app}")
+        cls.logger.log(lvl, f"version: {version}")
+        cls.logger.log(lvl, f"arch: {arch}")
 
         return Spec(
             phase = phase,
@@ -1311,6 +1365,7 @@ async def do_base(args):
             try:
                 if await ai.run(disk=image, timeout=timeout):
                     eprint(f"{what}: {image}")
+                    return image
                 else:
                     raise AutoinstallError(what)
             except asyncio.CancelledError:
@@ -1318,9 +1373,14 @@ async def do_base(args):
             except TimeoutError:
                 raise Timeout(what, timeout)
 
-async def do_site(args):
-    site = Spec.from_args(args, "site")
-    image = prepare_image(args)
+async def do_site(args, image=None):
+    site = Spec.from_args(args, "site", helpful=not image)
+
+    if not site:
+        logger.debug("trivial site configuration: skipping site phase")
+        return image
+
+    image = image or prepare_image(args)
 
     with Files.from_args(args, site) as files:
         async with Autoinstall(site, files, mode="upgrade") as ai:
@@ -1331,6 +1391,7 @@ async def do_site(args):
             try:
                 if await ai.run(disk=image, timeout=timeout):
                     eprint(f"{what}: {image}")
+                    return image
                 else:
                     raise AutoinstallError(what)
             except asyncio.CancelledError:
@@ -1352,12 +1413,14 @@ class Run:
         self.qemu.serial = Qemu.UNIX
 
         self.ssh_port = vars(args).get("ssh_port") or self.spec.get("ssh", {}).get("port", utils.random_ephemeral_port())
-        self.qemu.hostfwd.append((("tcp", self.host, self.ssh_port), (None, 22)))
+        self.sshd_port = self.spec.get("sshd", {}).get("port", 22)
+        self.qemu.hostfwd.append((("tcp", self.host, self.ssh_port), (None, self.sshd_port)))
+        self.logger.info(f"ssh port forward: ({self.host}, {self.ssh_port}) -> {self.sshd_port}")
 
         for hostfwd in self.spec.get("hostfwd", {}).get("tcp", []):
             haddr, hport = hostfwd.get("haddr", "0.0.0.0"), hostfwd.get("hport", utils.random_ephemeral_port())
             gaddr, gport = hostfwd.get("gaddr", None), hostfwd["gport"]
-            logger.info(f"host tcp port forward: ({haddr}, {hport}), ({gaddr}, {gport})")
+            self.logger.info(f"host tcp port forward: ({haddr}, {hport}) -> ({gaddr}, {gport})")
             self.qemu.hostfwd.append((("tcp", haddr, hport), (gaddr, gport)))
 
         self.ssh_pubkeys = {}
@@ -1381,7 +1444,7 @@ class Run:
         return self._known_hosts
 
     def ssh_cmdline(self, user=None, identity_file=None):
-        cmdline = situation.ssh
+        cmdline = situation.ssh.copy()
         cmdline += [ "-o", "UserKnownHostsFile=" + self.known_hosts ]
         cmdline += [ "-o", "BatchMode=yes" ]
         cmdline += [ "-p", str(self.ssh_port) ]
@@ -1827,7 +1890,7 @@ def parse_args():
     deps_cmd.add_argument("-a", "--arch")
 
     def add_files_args(p):
-        p.add_argument("--cache", default=env("CACHE"))
+        p.add_argument("--cache", default=env("CACHE", os.path.join(os.path.expanduser("~"), ".cache", whoami)))
         p.add_argument("--mirror", default=env("MIRROR"))
 
     def add_image_args(p, base_image=True):
@@ -1845,6 +1908,11 @@ def parse_args():
     add_spec_args(site_cmd)
     add_files_args(site_cmd)
     add_image_args(site_cmd)
+
+    build_cmd = subparsers.add_parser("build")
+    add_spec_args(build_cmd)
+    add_files_args(build_cmd)
+    add_image_args(build_cmd, base_image=False)
 
     def add_ssh_args(p):
         p.add_argument("-i", "--identity-file", default=env("SSH_KEY"))
@@ -1906,14 +1974,19 @@ def main():
     try:
         if args.cmd == "deps":
             do_deps(args)
+
         elif args.cmd == "base":
             run(do_base, args)
         elif args.cmd == "site":
             run(do_site, args)
+        elif args.cmd == "build":
+            image = run(do_base, args)
+            run(do_site, args, image)
         elif args.cmd == "run":
             run(do_run, args)
         elif args.cmd == "ssh":
             run(do_ssh, args)
+
         elif args.cmd == "aws":
             AWS.main(args)
 
