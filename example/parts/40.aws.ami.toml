@@ -1,5 +1,4 @@
 [aws.ami]
-name_template = "foo-%OS-%VERSION-%SALT"
 snapshot.s3.bucket = "rootmos-infra-artifacts"
-snapshot.s3.key_template = "uploads/foo-%TIMESTAMP-%SALT.img"
+snapshot.s3.key_template = "uploads/%APP-%TIMESTAMP-%SALT.img"
 vmimport_role = "arn:aws:iam::676237474471:role/infra-vmimport"

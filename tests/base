@@ -10,7 +10,6 @@ version = "$VERSION"
 arch = "$ARCH"
 
 [base]
-hostname = "foo"
 rc_firsttime.syspatch = false
 rc_local.syspatch = false
 
