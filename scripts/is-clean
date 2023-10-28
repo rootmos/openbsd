@@ -13,9 +13,14 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="is-clean-") as tmp:
         head = os.path.join(tmp, "head")
         with open(head, "xb") as f:
-            p = subprocess.run(["git", "show", "HEAD:./"+b], check=True, stdout=subprocess.PIPE, cwd=d)
+            p = subprocess.run(["git", "show", "HEAD:./"+b], check=True, stdout=subprocess.PIPE, cwd=d or None)
             f.write(p.stdout)
 
-        subprocess.run(["make", "-C", d, b], check=True)
+        cmdline = [ "make" ]
+        if d:
+            cmdline += [ "-C", d ]
+        cmdline += [ b ]
+
+        subprocess.run(cmdline, check=True)
 
         subprocess.run(["diff", target, head], check=True)

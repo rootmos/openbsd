@@ -11,6 +11,9 @@ jobs:
     - name: The example's specification is clean
       run: scripts/is-clean example/openbsd.toml
 
+    - name: The example's README is clean
+      run: scripts/is-clean example/README.md
+
   sanity-script:
     runs-on: ubuntu-latest
     container:

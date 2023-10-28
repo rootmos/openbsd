@@ -1,0 +1,83 @@
+# Example setup
+
+```toml
+app = "foo"
+version = "7.4"
+arch = "amd64"
+```
+
+```toml
+[base]
+disk.size = 4096
+sets = [ "man", "game", "comp" ]
+network.interface = "xnf0"
+```
+
+```toml
+[site]
+pkgs = [ "awscli" ]
+timeout = 1800
+```
+
+```toml
+[[site.patch.doas.files]]
+lines = [ "permit nopass :wheel" ]
+mode = 0o400
+dst = "/etc/doas.conf"
+```
+
+```toml
+[[site.patch.ntpd.files]]
+dst = "/etc/ntpd.conf"
+lines = [
+  "server 169.254.169.123 weight 2", # https://aws.amazon.com/blogs/aws/keeping-time-with-amazon-time-sync-service/
+  "servers pool.ntp.org",
+  "sensor *",
+  "constraints from openbsd.org",
+]
+```
+
+```toml
+[site.patch.nginx]
+pkg = "nginx"
+service = "nginx"
+
+[[site.patch.nginx.files]]
+src = "site/index.html"
+dst = "/var/www/htdocs/index.html"
+
+[[site.patch.nginx.files]]
+src = "site/nginx.conf"
+dst = "/etc/nginx/nginx.conf"
+```
+
+```toml
+[site.patch.echoip]
+pkgs = [ "go" ]
+services = [ "echoip" ]
+install = "site/echoip/install"
+
+[[site.patch.echoip.files]]
+src = "site/echoip/service"
+mode = 0o755
+dst = "/etc/rc.d/echoip"
+```
+
+```toml
+[[run.hostfwd.tcp]]
+hport = 8000
+gport = 80
+```
+
+```toml
+[aws.ami]
+snapshot.s3.bucket = "rootmos-infra-artifacts"
+snapshot.s3.key_template = "uploads/%APP-%TIMESTAMP-%SALT.img"
+vmimport_role = "arn:aws:iam::676237474471:role/infra-vmimport"
+```
+
+```toml
+[aws.ami.terraform]
+local = "image"
+output = "terraform/openbsd.tf"
+```
