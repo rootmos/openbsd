@@ -187,7 +187,7 @@ class Situation:
         self._qemu = {}
         self._signify = None
         self._ssh = None
-        self._scp = None
+        self._sftp = None
         self._socat = None
 
     def figure_out_distro_and_installer(self):
@@ -309,14 +309,13 @@ class Situation:
         return [ self._ssh ]
 
     @property
-    def scp(self):
-        if self._scp is None:
-            cmd = "scp"
-            self._scp = shutil.which(cmd)
-            if self._scp is None:
-                # TODO: verify
+    def sftp(self):
+        if self._sftp is None:
+            cmd = "sftp"
+            self._sftp = shutil.which(cmd)
+            if self._sftp is None:
                 if self.distro == "alpine":
-                    pkg = "openssh-client-default"
+                    pkg = "openssh-client-common"
                 elif self.distro == "archlinux":
                     pkg = "openssh"
                 elif self.distro == "ubuntu":
@@ -324,7 +323,7 @@ class Situation:
                 elif self.distro == "debian":
                     pkg = "openssh-client"
                 raise MissingDependency(command=cmd, package=pkg)
-        return [ self._scp ]
+        return [ self._sftp ]
 
     @property
     def socat(self):
@@ -1511,14 +1510,22 @@ class Run:
             cmdline += [ "-i", identity_file ]
 
         user = user or self.spec.get("ssh", {}).get("user")
-
         cmdline += [ (user + '@' if user else '') + self.host ]
 
         return cmdline
 
-    def scp_cmdline(self, user=None, identity_file=None):
-        cmdline = situation.scp.copy()
-        raise NotImplementedError()
+    def sftp_cmdline(self, user=None, identity_file=None):
+        cmdline = situation.sftp.copy()
+        cmdline += [ "-o", "UserKnownHostsFile=" + self.known_hosts ]
+        cmdline += [ "-P", str(self.ssh_port) ]
+
+        if identity_file:
+            cmdline += [ "-i", identity_file ]
+
+        user = user or self.spec.get("ssh", {}).get("user")
+        cmdline += [ (user + '@' if user else '') + self.host ]
+
+        return cmdline
 
     async def ssh(self, *args, script=None, **kwargs):
         await self.ssh_port_open
@@ -1546,8 +1553,8 @@ class Run:
 
         if cmd == "ssh":
             cmdline = self.ssh_cmdline(**kwargs)
-        elif cmd == "scp":
-            cmdline = self.scp_cmdline(**kwargs)
+        elif cmd == "sftp":
+            cmdline = self.sftp_cmdline(**kwargs)
         else:
             raise RuntimeError(f"unsupported command: {cmd}")
 
@@ -1616,7 +1623,7 @@ async def do_run(args):
     try:
         async with Run(args)() as r:
             eprint("ssh: " + r.wrap("ssh", path=args.ssh_wrapper, user=args.user, identity_file=args.identity_file))
-            # eprint("scp: " + r.scp_wrapper(path=args.scp_wrapper, user=args.user, identity_file=args.identity_file))
+            eprint("sftp: " + r.wrap("sftp", path=args.sftp_wrapper, user=args.user, identity_file=args.identity_file))
             await r.halted
     except asyncio.CancelledError:
         raise Aborted("run")
@@ -1996,7 +2003,7 @@ def parse_args():
         p.add_argument("-i", "--identity-file", default=env("SSH_KEY"))
         p.add_argument("-u", "--user", default=env("SSH_USER"))
         p.add_argument("-s", "--ssh-wrapper", metavar="FILE")
-        p.add_argument("-S", "--scp-wrapper", metavar="FILE")
+        p.add_argument("-S", "--sftp-wrapper", metavar="FILE")
 
     run_cmd = subparsers.add_parser("run")
     add_spec_args(run_cmd)
