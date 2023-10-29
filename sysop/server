@@ -4,7 +4,7 @@ PORT=557
 ADDR=0.0.0.0
 
 log() {
-    logger -ct sysop -f-
+    logger -ct sysop
 }
 
 ROOT=/var/sysop
@@ -12,7 +12,7 @@ TOKENS=$ROOT/tokens
 COMMANDS=$ROOT/commands
 
 echo "listening udp:$ADDR:$PORT" | log
-doas nc -ulkd "$ADDR" "$PORT" | while IFS=: read CMD TOKEN; do
+doas "$(which /usr/bin/nc)" -ulkd "$ADDR" "$PORT" | while IFS=: read CMD TOKEN; do
     if [ ! -f "$TOKENS/$CMD" ] || [ ! -f "$COMMANDS/$CMD" ]; then
         echo "unknown command: $CMD" | log
         continue

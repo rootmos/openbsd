@@ -1,1 +1,1 @@
-doas shutdown -p now
+doas /sbin/shutdown -p now

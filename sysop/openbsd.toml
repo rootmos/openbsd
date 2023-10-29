@@ -1,9 +1,17 @@
 app = "sysop"
 
 [[site.patch.doas.files]]
-lines = [ "permit nopass :wheel" ]
+lines = [
+    "permit nopass :wheel",
+    "permit nopass sysop as root cmd /usr/bin/nc args -ulkd 0.0.0.0 557",
+    "permit nopass sysop as root cmd /sbin/shutdown",
+]
 mode = 0o400
 dst = "/etc/doas.conf"
+
+[site.patch.sysop]
+service = "sysop"
+install = "install"
 
 [[site.patch.sysop.files]]
 src = "server"
@@ -15,12 +23,13 @@ src = "shutdown.cmd"
 dst = "/var/sysop/commands/shutdown"
 
 [[site.patch.sysop.files]]
-src = "shutdown.cmd"
-dst = "/var/sysop/commands/shutdown"
-
-[[site.patch.sysop.files]]
 src = "shutdown.tok"
 dst = "/var/sysop/tokens/shutdown"
+
+[[site.patch.sysop.files]]
+src = "service"
+mode = 0o755
+dst = "/etc/rc.d/sysop"
 
 [[run.hostfwd.udp]]
 hport = 5557
