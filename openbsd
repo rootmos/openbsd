@@ -1460,6 +1460,7 @@ class Run:
         self.host = "localhost"
 
         self.qemu = Qemu.from_arch(self.spec.arch)
+        self.qemu.reboot = self.spec.get("reboot", False)
         self.qemu.disk = args.image
         self.qemu.memory = self.spec.get("memory")
         self.qemu.serial = Qemu.UNIX
