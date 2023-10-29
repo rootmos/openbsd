@@ -187,6 +187,7 @@ class Situation:
         self._qemu = {}
         self._signify = None
         self._ssh = None
+        self._scp = None
         self._socat = None
 
     def figure_out_distro_and_installer(self):
@@ -306,6 +307,24 @@ class Situation:
                     pkg = "openssh-client"
                 raise MissingDependency(command=cmd, package=pkg)
         return [ self._ssh ]
+
+    @property
+    def scp(self):
+        if self._scp is None:
+            cmd = "scp"
+            self._scp = shutil.which(cmd)
+            if self._scp is None:
+                # TODO: verify
+                if self.distro == "alpine":
+                    pkg = "openssh-client-default"
+                elif self.distro == "archlinux":
+                    pkg = "openssh"
+                elif self.distro == "ubuntu":
+                    pkg = "openssh-client"
+                elif self.distro == "debian":
+                    pkg = "openssh-client"
+                raise MissingDependency(command=cmd, package=pkg)
+        return [ self._scp ]
 
     @property
     def socat(self):
@@ -960,10 +979,7 @@ class Autoinstall:
                 if rc_firsttime.get("reboot", False):
                     ls += [
                         "at now <<EOF",
-                        "local _tty=/dev/tty00",
-                        "echo | tee \\${_tty}",
-                        "wait-for-reorder-kernel 2>&1 | tee \\${_tty}; sleep 5; done",
-                        "shutdown -p now 2>&1 | tee \\${_tty}",
+                        "shutdown -p now 2>&1 | tee /dev/tty00",
                         "EOF",
                     ]
 
@@ -1453,11 +1469,16 @@ class Run:
         self.qemu.hostfwd.append((("tcp", self.host, self.ssh_port), (None, self.sshd_port)))
         self.logger.info(f"ssh port forward: ({self.host}, {self.ssh_port}) -> {self.sshd_port}")
 
-        for hostfwd in self.spec.get("hostfwd", {}).get("tcp", []):
+        def add_hostfwd(prot, hostfwd):
             haddr, hport = hostfwd.get("haddr", "0.0.0.0"), hostfwd.get("hport", utils.random_ephemeral_port())
             gaddr, gport = hostfwd.get("gaddr", None), hostfwd["gport"]
-            self.logger.info(f"host tcp port forward: ({haddr}, {hport}) -> ({gaddr}, {gport})")
-            self.qemu.hostfwd.append((("tcp", haddr, hport), (gaddr, gport)))
+            self.logger.info(f"host port forward: ({prot}, {haddr}, {hport}) -> ({gaddr}, {gport})")
+            self.qemu.hostfwd.append(((prot, haddr, hport), (gaddr, gport)))
+
+        for hostfwd in self.spec.get("hostfwd", {}).get("tcp", []):
+            add_hostfwd("tcp", hostfwd)
+        for hostfwd in self.spec.get("hostfwd", {}).get("udp", []):
+            add_hostfwd("udp", hostfwd)
 
         self.ssh_pubkeys = {}
         self.has_ssh_pubkey = asyncio.Event()
@@ -1494,6 +1515,10 @@ class Run:
 
         return cmdline
 
+    def scp_cmdline(self, user=None, identity_file=None):
+        cmdline = situation.scp.copy()
+        raise NotImplementedError()
+
     async def ssh(self, *args, script=None, **kwargs):
         await self.ssh_port_open
 
@@ -1513,15 +1538,24 @@ class Run:
             await p.communicate(input=b64)
         return await p.wait() == 0
 
-    def ssh_wrapper(self, path=None, **kwargs):
-        cmdline = self.ssh_cmdline(**kwargs)
+    def wrap(self, cmd, path=None, **kwargs):
+        p = path or os.path.join(self.workdir.name, cmd)
+        if os.path.exists(p):
+            return p
+
+        if cmd == "ssh":
+            cmdline = self.ssh_cmdline(**kwargs)
+        elif cmd == "scp":
+            cmdline = self.scp_cmdline(**kwargs)
+        else:
+            raise RuntimeError(f"unsupported command: {cmd}")
 
         ls = [
             "#!/bin/sh",
             f'exec {" ".join(cmdline)} "$@"',
         ]
 
-        p = path or os.path.join(self.workdir.name, "ssh")
+        p = path or os.path.join(self.workdir.name, cmd)
         with open(p, "wb") as f:
             f.write(lines(*ls))
         utils.chmod_plus_x(p)
@@ -1578,13 +1612,20 @@ class Run:
             self.workdir = None
 
 async def do_run(args):
-    async with Run(args)() as r:
-        eprint("boot: " + r.ssh_wrapper(path=args.ssh_wrapper, user=args.user, identity_file=args.identity_file))
-        await r.halted
+    try:
+        async with Run(args)() as r:
+            eprint("ssh: " + r.wrap("ssh", path=args.ssh_wrapper, user=args.user, identity_file=args.identity_file))
+            # eprint("scp: " + r.scp_wrapper(path=args.scp_wrapper, user=args.user, identity_file=args.identity_file))
+            await r.halted
+    except asyncio.CancelledError:
+        raise Aborted("run")
 
 async def do_ssh(args):
-    async with Run(args)() as r:
-        await r.ssh(user=args.user, identity_file=args.identity_file, script=args.run)
+    try:
+        async with Run(args)() as r:
+            await r.ssh(user=args.user, identity_file=args.identity_file, script=args.run)
+    except asyncio.CancelledError:
+        raise Aborted("ssh")
 
 class AWS:
     logger = logging.getLogger(f"{whoami}.aws")
@@ -1953,11 +1994,12 @@ def parse_args():
     def add_ssh_args(p):
         p.add_argument("-i", "--identity-file", default=env("SSH_KEY"))
         p.add_argument("-u", "--user", default=env("SSH_USER"))
+        p.add_argument("-s", "--ssh-wrapper", metavar="FILE")
+        p.add_argument("-S", "--scp-wrapper", metavar="FILE")
 
     run_cmd = subparsers.add_parser("run")
     add_spec_args(run_cmd)
     add_ssh_args(run_cmd)
-    run_cmd.add_argument("-s", "--ssh-wrapper", metavar="FILE")
     run_cmd.add_argument("image", metavar="IMAGE")
 
     ssh_cmd = subparsers.add_parser("ssh")

@@ -1,0 +1,3 @@
+#!/bin/sh
+
+socat - udp:localhost:5557 <<< "shutdown:$(<shutdown.pre)"
