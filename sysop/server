@@ -1,0 +1,27 @@
+#!/bin/sh
+
+PORT=557
+ADDR=0.0.0.0
+
+log() {
+    logger -ct sysop
+}
+
+ROOT=/var/sysop
+TOKENS=$ROOT/tokens
+COMMANDS=$ROOT/commands
+
+echo "listening udp:$ADDR:$PORT" | log
+doas "$(which /usr/bin/nc)" -ulkd "$ADDR" "$PORT" | while IFS=: read CMD TOKEN; do
+    if [ ! -f "$TOKENS/$CMD" ] || [ ! -f "$COMMANDS/$CMD" ]; then
+        echo "unknown command: $CMD" | log
+        continue
+    fi
+
+    if echo -n "$TOKEN" | sha256 | cmp -s - "$TOKENS/$CMD"; then
+        echo "authorized command: $CMD" | log
+        sh "$COMMANDS/$CMD" 2>&1 | log
+    else
+        echo "unauthorized command: $CMD" | log
+    fi
+done

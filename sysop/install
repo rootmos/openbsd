@@ -1,0 +1,1 @@
+useradd -d /var/empty -s /sbin/nologin sysop

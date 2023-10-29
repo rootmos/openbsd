@@ -1,0 +1,4 @@
+#!/bin/sh
+
+CMD=${1-shutdown}
+socat - udp:localhost:5557 <<< "$CMD:$(<commands/$CMD.pre)"
