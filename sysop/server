@@ -20,7 +20,7 @@ doas "$(which /usr/bin/nc)" -ulkd "$ADDR" "$PORT" | while IFS=: read CMD TOKEN; 
 
     if echo -n "$TOKEN" | sha256 | cmp -s - "$TOKENS/$CMD"; then
         echo "authorized command: $CMD" | log
-        sh "$COMMANDS/$CMD"
+        sh "$COMMANDS/$CMD" 2>&1 | log
     else
         echo "unauthorized command: $CMD" | log
     fi

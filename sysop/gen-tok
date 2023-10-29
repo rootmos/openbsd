@@ -1,0 +1,4 @@
+#!/bin/sh
+
+head -c8 /dev/urandom | sha256sum | cut -d' ' -f1 | tee "$1.pre"
+echo -n "$(cat "$1.pre")" | sha256sum | cut -d' ' -f1 | tee "$1.tok"

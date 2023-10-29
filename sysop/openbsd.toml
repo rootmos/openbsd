@@ -4,7 +4,9 @@ app = "sysop"
 lines = [
     "permit nopass :wheel",
     "permit nopass sysop as root cmd /usr/bin/nc args -ulkd 0.0.0.0 557",
-    "permit nopass sysop as root cmd /sbin/shutdown",
+    "permit nopass sysop as root cmd /sbin/shutdown args -p now",
+    "permit nopass sysop as root cmd /sbin/reboot args",
+    "permit nopass sysop as root cmd /usr/sbin/syspatch args",
 ]
 mode = 0o400
 dst = "/etc/doas.conf"
@@ -19,17 +21,33 @@ mode = 0o755
 dst = "/usr/local/bin/sysop"
 
 [[site.patch.sysop.files]]
-src = "shutdown.cmd"
-dst = "/var/sysop/commands/shutdown"
-
-[[site.patch.sysop.files]]
-src = "shutdown.tok"
-dst = "/var/sysop/tokens/shutdown"
-
-[[site.patch.sysop.files]]
 src = "service"
 mode = 0o755
 dst = "/etc/rc.d/sysop"
+
+[[site.patch.sysop.files]]
+src = "commands/shutdown.cmd"
+dst = "/var/sysop/commands/shutdown"
+[[site.patch.sysop.files]]
+src = "commands/shutdown.tok"
+dst = "/var/sysop/tokens/shutdown"
+
+[[site.patch.sysop.files]]
+src = "commands/reboot.cmd"
+dst = "/var/sysop/commands/reboot"
+[[site.patch.sysop.files]]
+src = "commands/reboot.tok"
+dst = "/var/sysop/tokens/reboot"
+
+[[site.patch.sysop.files]]
+src = "commands/update.cmd"
+dst = "/var/sysop/commands/update"
+[[site.patch.sysop.files]]
+src = "commands/update.tok"
+dst = "/var/sysop/tokens/update"
+
+[run]
+reboot = true
 
 [[run.hostfwd.udp]]
 hport = 5557
