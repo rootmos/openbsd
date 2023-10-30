@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# vim: filetype=python
 
 import argparse
 import asyncio
@@ -98,6 +99,7 @@ DEFAULT_VERSION = Version.add(
         "amd64": "5a1f94734674e34d3a0293af5f0cdefb57b1c7c5e70149f9cc4021f214967874",
         "i386": "71c0db5485581bff928c181389252ee797f8c1cac4b03887bba789b57c16fe73",
         "arm64": "e405804581305a997f804cc7c1551f1aec72889a07c422480b0ec06ff266b1df",
+        "armv7": "37bb99ba6fb8e1d326e5ea2e596df5749c0cd3ca4ede8230ab62f308b1fd5995",
     },
 )
 
@@ -1189,10 +1191,10 @@ class ExitWithMessage(Exception):
         self.exit_status = exit_status
         self.message = message
 
-class RefusingToOverwriteImage(ExitWithMessage):
-    def __init__(self, image):
-        super().__init__(3, f"refusing to overwrite image: {image}")
-        self.image = image
+class RefusingToOverwrite(ExitWithMessage):
+    def __init__(self, path):
+        super().__init__(3, f"refusing to overwrite: {path}")
+        self.path = path
 
 class MissingDependency(ExitWithMessage):
     def __init__(self, command, package):
@@ -1336,7 +1338,7 @@ def prepare_image(args, size=None):
     image = args.image
     exists = os.path.exists(image)
     if exists and not args.overwrite_image:
-        raise RefusingToOverwriteImage(image)
+        raise RefusingToOverwrite(image)
 
     if size is not None:
         if exists:
@@ -1371,7 +1373,7 @@ class Spec:
         return bool(self.spec)
 
     @classmethod
-    def from_args(cls, args, phase, helpful=True):
+    def from_args(cls, args, phase=None, helpful=True):
         if os.path.exists(args.spec):
             cls.logger.debug(f"loading specification: {args.spec}")
             spec = BestEffort.read(args.spec)
@@ -1402,6 +1404,24 @@ class Spec:
             arch = arch,
             version = version,
         )
+
+def do_file(args):
+    spec = Spec.from_args(args)
+    with Files.from_args(args, spec) as files:
+        p = files.get(args.file)
+        t = args.target or args.file
+        if os.path.exists(t):
+            if args.overwrite:
+                eprint(f"remove: {t}")
+                os.remove(t)
+            else:
+                raise RefusingToOverwrite(t)
+        if args.symlink:
+            eprint(f"symlink: {p} -> {t}")
+            os.symlink(p, t)
+        else:
+            eprint(f"copy: {p} -> {t}")
+            shutil.copy(p, t)
 
 async def do_base(args):
     base = Spec.from_args(args, "base")
@@ -1978,6 +1998,14 @@ def parse_args():
         p.add_argument("--cache", default=env("CACHE", os.path.join(os.path.expanduser("~"), ".cache", whoami)))
         p.add_argument("--mirror", default=env("MIRROR"))
 
+    file_cmd = subparsers.add_parser("file")
+    add_spec_args(file_cmd)
+    add_files_args(file_cmd)
+    file_cmd.add_argument("-s", "--symlink", action="store_true")
+    file_cmd.add_argument("-f", "--overwrite", action="store_true")
+    file_cmd.add_argument("file", metavar="FILE")
+    file_cmd.add_argument("target", metavar="TARGET", nargs="?")
+
     def add_image_args(p, base_image=True):
         if base_image:
             p.add_argument("-b", "--base-image", metavar="IMAGE")
@@ -2060,6 +2088,8 @@ def main():
     try:
         if args.cmd == "deps":
             do_deps(args)
+        elif args.cmd == "file":
+            do_file(args)
 
         elif args.cmd == "base":
             run(do_base, args)
@@ -2068,6 +2098,7 @@ def main():
         elif args.cmd == "build":
             image = run(do_base, args)
             run(do_site, args, image)
+
         elif args.cmd == "run":
             run(do_run, args)
         elif args.cmd == "ssh":
