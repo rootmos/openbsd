@@ -1010,7 +1010,7 @@ class Autoinstall:
                 ls = []
 
                 if rc_shutdown.get("wait_for_reorder_kernel", True):
-                    ls.append(wait_for_reorder_kernel)
+                    ls.append(f"{wait_for_reorder_kernel} 3&>1 | logger -ct wait")
 
                 if ls:
                     self.site_file("etc/rc.shutdown", lines("echo 'running rc.shutdown'", *ls))
@@ -1044,10 +1044,10 @@ class Autoinstall:
                     ls.append("syspatch")
 
                 ls += [ f'cat /{meta_dir}/actions' ]
-                ls += [ f'export PATH=$(getconf PATH)' ]
+                ls += [ f'export PATH=$(getconf PATH) HOME=/root' ]
 
                 if rc_local.get("wait_for_reorder_kernel", True):
-                    ls.append(wait_for_reorder_kernel)
+                    ls.append(f"{wait_for_reorder_kernel} 2&>1 | logger -ct wait")
 
                 if ls:
                     self.site_file("etc/rc.local", lines("echo 'running rc.local'", *ls))
