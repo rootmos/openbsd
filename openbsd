@@ -683,6 +683,7 @@ class Qemu:
 
         self.reboot = False
         self.memory = None
+        self.cpus = None
         self.disk = None
 
         self.hostname = None
@@ -709,6 +710,8 @@ class Qemu:
             self.cmdline = qemu.base_cmdline.copy()
 
             self.cmdline += [ "-m", str(qemu.memory or 512) ]
+            if qemu.cpus:
+                self.cmdline += [ "-smp", str(qemu.cpus) ]
 
             if qemu.disk:
                 drive = [ "file=" + qemu.disk ]
@@ -870,7 +873,10 @@ class Autoinstall:
 
         sets = []
         if mode == "install":
-            sets += [ "bsd", "base" ]
+            sets += [ "bsd" ]
+            if spec.get("smp"):
+                sets += [ "bsd.mp" ]
+            sets += [ "base" ]
         sets += [ "site" ]
         sets += spec.get("sets", [])
         sets_directory = "sets"
@@ -923,6 +929,8 @@ class Autoinstall:
 
             if "bsd" not in sets:
                 line(f"Are you *SURE* your upgrade is complete without 'bsd' = yes")
+            if "bsd.mp" not in sets:
+                line(f"Are you *SURE* your upgrade is complete without 'bsd.mp' = yes")
             if "base" not in sets:
                 line(f"Are you *SURE* your upgrade is complete without 'base{files.version.short}.tgz' = yes")
 
@@ -1115,6 +1123,7 @@ class Autoinstall:
         self.site_file(f"{mode}.site", mode=0o744, bytes=lines(*post))
 
         self.qemu = Qemu.from_arch(spec.arch)
+        self.qemu.cpus = 2 if spec.get("smp") else None
         self.qemu.tftp = tftp_root
         self.qemu.bootfile = bootfile
         if mode == "install":
@@ -1517,6 +1526,7 @@ class Run:
         self.qemu.reboot = self.spec.get("reboot", False)
         self.qemu.disk = args.image
         self.qemu.memory = self.spec.get("memory")
+        self.qemu.cpus = self.spec.get("cpus")
         self.qemu.serial = Qemu.UNIX
 
         self.ssh_port = vars(args).get("ssh_port") or self.spec.get("ssh", {}).get("port", utils.random_ephemeral_port())
