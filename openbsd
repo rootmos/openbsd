@@ -1066,7 +1066,7 @@ class Autoinstall:
 
             pkgs = set(spec.get("pkgs", []))
             services = set(spec.get("services", []))
-            installers = {}
+            installers = []
 
             for n, p in spec.get("patch", {}).items():
                 pkgs |= set(p.get("pkgs", []))
@@ -1093,24 +1093,26 @@ class Autoinstall:
 
                 installer = p.get("install")
                 if installer:
-                    patch_dir = p.get("dir", os.path.join(patch_prefix, n))
                     if isinstance(installer, str):
                         with open(installer, "rb") as f:
                             bs = f.read()
                     else:
                         bs = lines(*installer)
 
-                    self.site_file(os.path.join(patch_dir, "install"), mode=0o744, bytes=bs)
-                    installers[n] = patch_dir
+                    i = os.path.join(patch_prefix, f"{n}.install")
+                    self.site_file(i, mode=0o744, bytes=bs)
+                    installers.append(i)
 
             if pkgs:
                 self.logger.info(f"packages: {pkgs}")
                 post.append(f"echo 'pkg_add: {' '.join(pkgs)}'")
                 post.append(f"pkg_add -Iv {' '.join(pkgs)}")
 
-            for n, i in installers.items():
-                post.append(f"echo 'running installer: {n}'")
-                post.append(f"(cd {i} && env PATH=$(getconf PATH) ./install && rm install)")
+            if installers:
+                for i in installers:
+                    post.append(f"echo 'running installer: {i}'")
+                    post.append(f"(cd {os.path.dirname(i)} && env PATH=$(getconf PATH) ./{os.path.basename(i)} && rm {os.path.basename(i)})")
+                post.append(f"rmdir {patch_prefix} || true")
 
             if services:
                 self.logger.info(f"services: {services}")
