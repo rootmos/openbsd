@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # vim: filetype=python
+# vim: tabstop=4 softtabstop=4 shiftwidth=4
 
 import argparse
 import asyncio
@@ -191,6 +192,8 @@ class Situation:
         self._ssh = None
         self._sftp = None
         self._socat = None
+        self._kvm_hardware_support = None
+        self._kvm_kernel_support = None
 
     def figure_out_distro_and_installer(self):
         apk = shutil.which("apk")
@@ -273,6 +276,9 @@ class Situation:
             self.logger.debug(f"qemu; {arch}; {path}: {l.strip()}")
 
         cmdline = [ path ]
+        if self.kvm:
+            cmdline += [ "-enable-kvm" ]
+
         self._qemu[arch] = cmdline
         return cmdline
 
@@ -343,6 +349,31 @@ class Situation:
                     pkg = "socat"
                 raise MissingDependency(command=cmd, package=pkg)
         return [ self._socat ]
+
+    @property
+    def kvm_hardware_support(self):
+        if self._kvm_hardware_support is None:
+            p = subprocess.run(["grep", "-cq", "-E", "vmx|svm|0xc0f", "/proc/cpuinfo"])
+            self._kvm_hardware_support = p.returncode == 0
+            self.logger.debug("kvm hardware support: {self._kvm_hardware_support}")
+        return self._kvm_hardware_support
+
+    @property
+    def kvm_kernel_support(self):
+        if self._kvm_kernel_support is None:
+            self._kvm_kernel_support = False
+            p = subprocess.run(["lsmod"], check=True, text=True, stdout=subprocess.PIPE)
+            for l in p.stdout.splitlines():
+                m = l.split()[0]
+                if m == "kvm":
+                     self._kvm_kernel_support = True
+                     break
+            self.logger.debug("kvm kernel support: {self._kvm_kernel_support}")
+        return self._kvm_kernel_support
+
+    @property
+    def kvm(self):
+        return self.kvm_hardware_support and self.kvm_kernel_support
 
 class Files:
     logger = logging.getLogger(f"{whoami}.files")
