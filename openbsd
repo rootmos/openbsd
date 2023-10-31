@@ -997,6 +997,12 @@ class Autoinstall:
                 "    _t=$((_t + _i))",
                 '    echo 1>&2 "waiting for reorder_kernel to finish... (${_t}s)"',
                 "done",
+                "",
+                "while pgrep -qxf 'make newbsd'; do",
+                "    sleep $_i",
+                "    _t=$((_t + _i))",
+                '    echo 1>&2 "waiting for newbsd to finish... (${_t}s)"',
+                "done",
             ))
 
             rc_shutdown = spec.get("rc_shutdown", {})
@@ -1038,6 +1044,10 @@ class Autoinstall:
                     ls.append("syspatch")
 
                 ls += [ f'cat /{meta_dir}/actions' ]
+                ls += [ f'export PATH=$(getconf PATH)' ]
+
+                if rc_local.get("wait_for_reorder_kernel", True):
+                    ls.append(wait_for_reorder_kernel)
 
                 if ls:
                     self.site_file("etc/rc.local", lines("echo 'running rc.local'", *ls))
