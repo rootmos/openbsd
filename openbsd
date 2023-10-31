@@ -588,7 +588,7 @@ class Expect(asyncio.Protocol):
 
             self.buffer.append(b)
 
-            string = str(self.buffer, "UTF-8")
+            string = self.buffer.decode("UTF-8", errors="replace")
             for g in self.grep:
                 if not g.line:
                     g(string)
