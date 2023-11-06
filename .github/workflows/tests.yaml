@@ -62,13 +62,13 @@ jobs:
       id: cache-openbsd
       uses: actions/cache@v3
       with:
-          path: ${{ env.OPENBSD_CACHE }}
-          key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-          restore-keys: |
-              openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-              openbsd-${{ matrix.version }}-${{ matrix.arch }}
-              openbsd-${{ matrix.version }}
-              openbsd
+        path: ${{ env.OPENBSD_CACHE }}
+        key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+        restore-keys: |
+          openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+          openbsd-${{ matrix.version }}-${{ matrix.arch }}
+          openbsd-${{ matrix.version }}
+          openbsd
 
     - name: Run test
       run: tests/base -v ${{ matrix.version }} -a ${{ matrix.arch }}
@@ -79,7 +79,9 @@ jobs:
       with:
         name: ${{ github.job }}-${{ matrix.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
         retention-days: 3
-        path: /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
+        path: |
+          /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
+          !/**/*.img
 
   example:
     needs:
@@ -109,13 +111,13 @@ jobs:
       id: cache-openbsd
       uses: actions/cache@v3
       with:
-          path: ${{ env.OPENBSD_CACHE }}
-          key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-          restore-keys: |
-              openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-              openbsd-${{ matrix.version }}-${{ matrix.arch }}
-              openbsd-${{ matrix.version }}
-              openbsd
+        path: ${{ env.OPENBSD_CACHE }}
+        key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+        restore-keys: |
+          openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+          openbsd-${{ matrix.version }}-${{ matrix.arch }}
+          openbsd-${{ matrix.version }}
+          openbsd
 
     - name: Run test
       run: tests/example -v ${{ matrix.version }} -a ${{ matrix.arch }}
@@ -126,4 +128,6 @@ jobs:
       with:
         name: ${{ github.job }}-${{ matrix.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
         retention-days: 3
-        path: /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
+        path: |
+          /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
+          !/**/*.img
