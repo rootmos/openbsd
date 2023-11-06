@@ -1075,7 +1075,7 @@ class Autoinstall:
             patch_prefix = spec.get("patch", {}).get("prefix", "usr/patch").lstrip("/")
 
             pkgs = set(spec.get("pkgs", []))
-            services = set(spec.get("services", []))
+            services = spec.get("services", [])
             installers = []
 
             for n, p in spec.get("patch", {}).items():
@@ -1083,9 +1083,9 @@ class Autoinstall:
                 if p.get("pkg"):
                     pkgs.add(p.get("pkg"))
 
-                services |= set(p.get("services", []))
+                services += p.get("services", [])
                 if p.get("service"):
-                    services.add(p.get("service"))
+                    services.append(p.get("service"))
 
                 for file in p.get("files", []):
                     dst = file["dst"].lstrip("/")
@@ -1125,7 +1125,7 @@ class Autoinstall:
                 post.append(f"rmdir {patch_prefix} || true")
 
             if services:
-                self.logger.info(f"services: {services}")
+                self.logger.info(f"services: {' '.join(services)}")
                 for s in services:
                     post.append(f"echo 'enabling service: {s}'")
                     post.append(f"rcctl enable {s}")
