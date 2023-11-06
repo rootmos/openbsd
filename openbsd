@@ -1080,7 +1080,7 @@ class Autoinstall:
         elif mode == "upgrade":
             post.append(f"resolvd")
 
-            patch_prefix = spec.get("patch", {}).get("prefix", "usr/patch").lstrip("/")
+            patch_prefix = spec.get("patch", {}).get("prefix", "/usr/patch")
 
             pkgs = set(spec.get("pkgs", []))
             services = spec.get("services", [])
@@ -1117,7 +1117,7 @@ class Autoinstall:
                     else:
                         bs = lines(*installer)
 
-                    i = os.path.join(patch_prefix, f"{n}.install")
+                    i = os.path.join(patch_prefix, n, f"{n}.install")
                     self.site_file(i, mode=0o744, bytes=bs)
                     installers.append(i)
 
@@ -1129,7 +1129,13 @@ class Autoinstall:
             if installers:
                 for i in installers:
                     post.append(f"echo 'running installer: {i}'")
-                    post.append(f"(cd {os.path.dirname(i)} && env PATH=$(getconf PATH) ./{os.path.basename(i)} && rm {os.path.basename(i)})")
+                    exprs = [
+                        f"cd {os.path.dirname(i)}",
+                        f"env PATH=$(getconf PATH) ./{os.path.basename(i)}",
+                        f"rm {os.path.basename(i)}",
+                        f"(rmdir {os.path.dirname(i)} || true)",
+                    ]
+                    post.append("(" + " && ".join(exprs) + ")")
                 post.append(f"rmdir {patch_prefix} || true")
 
             if services:
