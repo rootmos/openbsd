@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # vim: filetype=python
+# vim: tabstop=4 softtabstop=4 shiftwidth=4
 
 import argparse
 import asyncio
@@ -191,6 +192,8 @@ class Situation:
         self._ssh = None
         self._sftp = None
         self._socat = None
+        self._kvm_hardware_support = None
+        self._kvm_kernel_support = None
 
     def figure_out_distro_and_installer(self):
         apk = shutil.which("apk")
@@ -273,6 +276,9 @@ class Situation:
             self.logger.debug(f"qemu; {arch}; {path}: {l.strip()}")
 
         cmdline = [ path ]
+        if self.kvm:
+            cmdline += [ "-enable-kvm" ]
+
         self._qemu[arch] = cmdline
         return cmdline
 
@@ -343,6 +349,31 @@ class Situation:
                     pkg = "socat"
                 raise MissingDependency(command=cmd, package=pkg)
         return [ self._socat ]
+
+    @property
+    def kvm_hardware_support(self):
+        if self._kvm_hardware_support is None:
+            p = subprocess.run(["grep", "-cq", "-E", "vmx|svm|0xc0f", "/proc/cpuinfo"])
+            self._kvm_hardware_support = p.returncode == 0
+            self.logger.debug("kvm hardware support: {self._kvm_hardware_support}")
+        return self._kvm_hardware_support
+
+    @property
+    def kvm_kernel_support(self):
+        if self._kvm_kernel_support is None:
+            self._kvm_kernel_support = False
+            p = subprocess.run(["lsmod"], check=True, text=True, stdout=subprocess.PIPE)
+            for l in p.stdout.splitlines():
+                m = l.split()[0]
+                if m == "kvm":
+                     self._kvm_kernel_support = True
+                     break
+            self.logger.debug("kvm kernel support: {self._kvm_kernel_support}")
+        return self._kvm_kernel_support
+
+    @property
+    def kvm(self):
+        return self.kvm_hardware_support and self.kvm_kernel_support
 
 class Files:
     logger = logging.getLogger(f"{whoami}.files")
@@ -557,7 +588,7 @@ class Expect(asyncio.Protocol):
 
             self.buffer.append(b)
 
-            string = str(self.buffer, "UTF-8")
+            string = self.buffer.decode("UTF-8", errors="replace")
             for g in self.grep:
                 if not g.line:
                     g(string)
@@ -652,6 +683,7 @@ class Qemu:
 
         self.reboot = False
         self.memory = None
+        self.cpus = None
         self.disk = None
 
         self.hostname = None
@@ -678,6 +710,8 @@ class Qemu:
             self.cmdline = qemu.base_cmdline.copy()
 
             self.cmdline += [ "-m", str(qemu.memory or 512) ]
+            if qemu.cpus:
+                self.cmdline += [ "-smp", str(qemu.cpus) ]
 
             if qemu.disk:
                 drive = [ "file=" + qemu.disk ]
@@ -839,7 +873,10 @@ class Autoinstall:
 
         sets = []
         if mode == "install":
-            sets += [ "bsd", "base" ]
+            sets += [ "bsd" ]
+            if spec.get("smp"):
+                sets += [ "bsd.mp" ]
+            sets += [ "base" ]
         sets += [ "site" ]
         sets += spec.get("sets", [])
         sets_directory = "sets"
@@ -892,6 +929,8 @@ class Autoinstall:
 
             if "bsd" not in sets:
                 line(f"Are you *SURE* your upgrade is complete without 'bsd' = yes")
+            if "bsd.mp" not in sets:
+                line(f"Are you *SURE* your upgrade is complete without 'bsd.mp' = yes")
             if "base" not in sets:
                 line(f"Are you *SURE* your upgrade is complete without 'base{files.version.short}.tgz' = yes")
 
@@ -958,6 +997,12 @@ class Autoinstall:
                 "    _t=$((_t + _i))",
                 '    echo 1>&2 "waiting for reorder_kernel to finish... (${_t}s)"',
                 "done",
+                "",
+                "while pgrep -qxf 'make newbsd'; do",
+                "    sleep $_i",
+                "    _t=$((_t + _i))",
+                '    echo 1>&2 "waiting for newbsd to finish... (${_t}s)"',
+                "done",
             ))
 
             rc_shutdown = spec.get("rc_shutdown", {})
@@ -965,7 +1010,7 @@ class Autoinstall:
                 ls = []
 
                 if rc_shutdown.get("wait_for_reorder_kernel", True):
-                    ls.append(wait_for_reorder_kernel)
+                    ls.append(f"{wait_for_reorder_kernel} 2&>1 | logger -isct wait")
 
                 if ls:
                     self.site_file("etc/rc.shutdown", lines("echo 'running rc.shutdown'", *ls))
@@ -999,6 +1044,10 @@ class Autoinstall:
                     ls.append("syspatch")
 
                 ls += [ f'cat /{meta_dir}/actions' ]
+                ls += [ f'export PATH=$(getconf PATH) HOME=/root' ]
+
+                if rc_local.get("wait_for_reorder_kernel", True):
+                    ls.append(f"{wait_for_reorder_kernel} 2&>1 | logger -isct wait")
 
                 if ls:
                     self.site_file("etc/rc.local", lines("echo 'running rc.local'", *ls))
@@ -1026,17 +1075,17 @@ class Autoinstall:
             patch_prefix = spec.get("patch", {}).get("prefix", "usr/patch").lstrip("/")
 
             pkgs = set(spec.get("pkgs", []))
-            services = set(spec.get("services", []))
-            installers = {}
+            services = spec.get("services", [])
+            installers = []
 
             for n, p in spec.get("patch", {}).items():
                 pkgs |= set(p.get("pkgs", []))
                 if p.get("pkg"):
                     pkgs.add(p.get("pkg"))
 
-                services |= set(p.get("services", []))
+                services += p.get("services", [])
                 if p.get("service"):
-                    services.add(p.get("service"))
+                    services.append(p.get("service"))
 
                 for file in p.get("files", []):
                     dst = file["dst"].lstrip("/")
@@ -1054,27 +1103,29 @@ class Autoinstall:
 
                 installer = p.get("install")
                 if installer:
-                    patch_dir = p.get("dir", os.path.join(patch_prefix, n))
                     if isinstance(installer, str):
                         with open(installer, "rb") as f:
                             bs = f.read()
                     else:
                         bs = lines(*installer)
 
-                    self.site_file(os.path.join(patch_dir, "install"), mode=0o744, bytes=bs)
-                    installers[n] = patch_dir
+                    i = os.path.join(patch_prefix, f"{n}.install")
+                    self.site_file(i, mode=0o744, bytes=bs)
+                    installers.append(i)
 
             if pkgs:
                 self.logger.info(f"packages: {pkgs}")
                 post.append(f"echo 'pkg_add: {' '.join(pkgs)}'")
                 post.append(f"pkg_add -Iv {' '.join(pkgs)}")
 
-            for n, i in installers.items():
-                post.append(f"echo 'running installer: {n}'")
-                post.append(f"(cd {i} && env PATH=$(getconf PATH) ./install && rm install)")
+            if installers:
+                for i in installers:
+                    post.append(f"echo 'running installer: {i}'")
+                    post.append(f"(cd {os.path.dirname(i)} && env PATH=$(getconf PATH) ./{os.path.basename(i)} && rm {os.path.basename(i)})")
+                post.append(f"rmdir {patch_prefix} || true")
 
             if services:
-                self.logger.info(f"services: {services}")
+                self.logger.info(f"services: {' '.join(services)}")
                 for s in services:
                     post.append(f"echo 'enabling service: {s}'")
                     post.append(f"rcctl enable {s}")
@@ -1084,6 +1135,7 @@ class Autoinstall:
         self.site_file(f"{mode}.site", mode=0o744, bytes=lines(*post))
 
         self.qemu = Qemu.from_arch(spec.arch)
+        self.qemu.cpus = 2 if spec.get("smp") else None
         self.qemu.tftp = tftp_root
         self.qemu.bootfile = bootfile
         if mode == "install":
@@ -1486,6 +1538,7 @@ class Run:
         self.qemu.reboot = self.spec.get("reboot", False)
         self.qemu.disk = args.image
         self.qemu.memory = self.spec.get("memory")
+        self.qemu.cpus = self.spec.get("cpus")
         self.qemu.serial = Qemu.UNIX
 
         self.ssh_port = vars(args).get("ssh_port") or self.spec.get("ssh", {}).get("port", utils.random_ephemeral_port())
