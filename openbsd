@@ -194,6 +194,7 @@ class Situation:
         self._socat = None
         self._kvm_hardware_support = None
         self._kvm_kernel_support = None
+        self._kvm_device_available = None
 
     def figure_out_distro_and_installer(self):
         apk = shutil.which("apk")
@@ -355,7 +356,7 @@ class Situation:
         if self._kvm_hardware_support is None:
             p = subprocess.run(["grep", "-cq", "-E", "vmx|svm|0xc0f", "/proc/cpuinfo"])
             self._kvm_hardware_support = p.returncode == 0
-            self.logger.debug("kvm hardware support: {self._kvm_hardware_support}")
+            self.logger.debug(f"kvm hardware support: {self._kvm_hardware_support}")
         return self._kvm_hardware_support
 
     @property
@@ -368,12 +369,19 @@ class Situation:
                 if m == "kvm":
                      self._kvm_kernel_support = True
                      break
-            self.logger.debug("kvm kernel support: {self._kvm_kernel_support}")
+            self.logger.debug(f"kvm kernel support: {self._kvm_kernel_support}")
         return self._kvm_kernel_support
 
     @property
+    def kvm_device_available(self):
+        if self._kvm_device_available is None:
+            self._kvm_device_available = os.path.exists("/dev/kvm")
+            self.logger.debug(f"kvm device available: {self._kvm_device_available}")
+        return self._kvm_device_available
+
+    @property
     def kvm(self):
-        return self.kvm_hardware_support and self.kvm_kernel_support
+        return self.kvm_hardware_support and self.kvm_kernel_support and self.kvm_device_available
 
 class Files:
     logger = logging.getLogger(f"{whoami}.files")
