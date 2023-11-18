@@ -1857,7 +1857,7 @@ class AWS:
 
     def ami_cmd(self, args):
         aws = Spec.from_args(args, "aws")
-        ami_spec = aws["ami"]
+        ami_spec = aws.get("ami", {})
 
         salt = fresh_salt()
         timestamp = datetime.datetime.utcnow().strftime("%Y%M%dT%H%M%SZ")
@@ -1872,11 +1872,21 @@ class AWS:
             t = t.replace("%ARCH", aws.arch)
             return t
 
-        snapshot_s3 = ami_spec["snapshot"]["s3"]
-        bucket = snapshot_s3["bucket"]
-        key = snapshot_s3.get("key")
+        snapshot_spec = ami_spec.get("snapshot")
+        if not snapshot_spec:
+            eprint("snapshot not specified")
+
+        s3_spec = snapshot_spec.get("s3")
+        if not s3_spec:
+            eprint("snapshot.s3 not specified")
+
+        bucket = s3_spec.get("bucket")
+        if not bucket:
+            eprint("snapshot.s3.bucket not specified")
+
+        key = s3_spec.get("key")
         if key is None:
-            key = render_template(snapshot_s3["key_template"])
+            key = render_template(s3_spec.get("key_template", "%APP-%TIMESTAMP-%SALT.img"))
 
         name = ami_spec.get("name")
         if name is None:
@@ -1906,7 +1916,7 @@ class AWS:
 
         with self.uploaded_image(args.image, bucket, key):
             si = self.import_snapshot(bucket, key,
-                vmimport = ami_spec.get("vmimport_role"),
+                vmimport = ami_spec.get("vmimport_role", "vmimport"),
                 tags = tags)
 
         delete_snapshot = True
@@ -2005,12 +2015,12 @@ class AWS:
                 for l in ls:
                     print(l)
         else:
-            eprint(iid)
+            print(iid)
 
     @staticmethod
     def main(args):
         if args.subcmd == "ami":
-            AWS().ami_cmd(args)
+            return AWS().ami_cmd(args)
 
 def default_logging_config(args):
     if args.log_file:
