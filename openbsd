@@ -826,6 +826,18 @@ class Qemu:
     def from_arch(arch):
         return Qemu(base_cmdline = situation.qemu(arch))
 
+rlib = {
+    "doas": {
+        "files": [
+           {
+               "lines": [ "permit nopass :wheel" ],
+               "mode": 0o400,
+               "dst": "/etc/doas.conf",
+            },
+        ],
+    },
+}
+
 class Autoinstall:
     logger = logging.getLogger(f"{whoami}.autoinstall")
 
@@ -1086,7 +1098,18 @@ class Autoinstall:
             services = spec.get("services", [])
             installers = []
 
+            patches = []
             for n, p in spec.get("patch", {}).items():
+                if n == "rlib":
+                    for k, v in p.items():
+                        if v is True:
+                            patches.append((k, rlib[k]))
+                        else:
+                            self.logger.warning(f"what do you mean: patch.{n}.{k} := {v}")
+                else:
+                    patches.append((n, p))
+
+            for n, p in patches:
                 pkgs |= set(p.get("pkgs", []))
                 if p.get("pkg"):
                     pkgs.add(p.get("pkg"))
