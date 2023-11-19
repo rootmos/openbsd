@@ -910,6 +910,12 @@ class Autoinstall:
         sets += spec.get("sets", [])
         sets_directory = "sets"
 
+        post = [
+            "set -e",
+            f"rm /{mode}.site",
+            f"echo 'running {mode}.site'",
+        ]
+
         self.response_file = os.path.join(webroot, f"auto_{mode}.conf")
         with open(self.response_file, "x") as f:
             def line(l):
@@ -934,16 +940,26 @@ class Autoinstall:
                     else:
                         user = { "name": name }
                         with open(ssh_pub_key_path) as g:
-                            user["ssh_pub_key"] = g.readlines()[0].strip()
+                            user["ssh_pub_keys"] = [ g.readlines()[0].strip() ]
+
                 if user:
-                    name = user['name']
+                    name = user.get("name", getpass.getuser())
+
+                    pks = user.get("ssh_pub_keys", [])
+                    if "ssh_pub_key" in user:
+                        pks.append(user["ssh_pub_key"])
+                    pk = pks[0]
+                    for pk in pks[1:]:
+                        b64 = base64.b64encode(pk.encode("UTF-8"))
+                        post.append(f"echo {b64} | b64decode | tee -a /home/{name}/.ssh/authorized_keys")
+
                     if name == "root":
-                        line(f"Public ssh key for root account = {user['ssh_pub_key']}")
+                        line(f"Public ssh key for root account = {pk}")
                         line(f"Allow root ssh login = yes")
                     else:
                         line(f"Setup a user = {name}")
                         line(f"Password for user {name} = {'*'*13}")
-                        line(f"Public ssh key for user {name} = {user['ssh_pub_key']}")
+                        line(f"Public ssh key for user {name} = {pk}")
 
                 if disklabel:
                     line(f"URL to autopartitioning template for disklabel = http://{http_internal_ip}/{disklabel}")
@@ -997,12 +1013,6 @@ class Autoinstall:
 
         with open(__file__, "rb") as f:
             self.site_file(f"{meta_dir}/installer.{ok_token}.py", mode=0o755, bytes=f.read())
-
-        post = [
-            "set -e",
-            f"rm /{mode}.site",
-            f"echo 'running {mode}.site'",
-        ]
 
         if mode == "install":
             self.site_file("etc/installurl", lines(files.mirror))
