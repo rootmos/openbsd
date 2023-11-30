@@ -826,26 +826,96 @@ class Qemu:
     def from_arch(arch):
         return Qemu(base_cmdline = situation.qemu(arch))
 
-rlib = {
-    "doas": {
-        "files": [ {
-               "lines": [ "permit nopass :wheel" ],
-               "mode": 0o400,
-               "dst": "/etc/doas.conf",
-        } ],
-    },
-    "ntpd": {
-        "files": [ {
-            "dst": "/etc/ntpd.conf",
-            "lines": [
-                "server 169.254.169.123 weight 2",
-                "servers pool.ntp.org",
-                "sensor *",
-                "constraints from openbsd.org",
-            ],
-        } ],
-    },
-}
+class Rlib:
+    logger = logging.getLogger(f"{whoami}.rlib")
+
+    def doas(self, d):
+        return {
+            "files": [ {
+                   "lines": [ "permit nopass :wheel" ],
+                   "mode": 0o400,
+                   "dst": "/etc/doas.conf",
+            } ],
+        }
+
+    def ntpd(self, d):
+        return {
+            "files": [ {
+                "dst": "/etc/ntpd.conf",
+                "lines": [
+                    "server 169.254.169.123 weight 2",
+                    "servers pool.ntp.org",
+                    "sensor *",
+                    "constraints from openbsd.org",
+                ],
+            } ],
+        }
+
+    def acme(self, d):
+        fqdn = d["fqdn"]
+        tld_pattern = re.compile(r"\.\*$")
+
+        aliases = set()
+        for a in d.get("alias", []):
+            for tld in d.get("tld", []):
+                aliases.add(tld_pattern.sub("." + tld, a))
+
+        self.logger.info(f"fqdn: {fqdn}")
+        self.logger.info(f"alias: {' '.join(aliases)}")
+
+        cls = []
+        cls.append('authority letsencrypt {')
+        cls.append('    api url "https://acme-v02.api.letsencrypt.org/directory"')
+        cls.append('    account key "/etc/acme/letsencrypt-privkey.pem"')
+        cls.append('}')
+        cls.append('')
+        cls.append('authority letsencrypt-staging {')
+        cls.append('    api url "https://acme-staging-v02.api.letsencrypt.org/directory"')
+        cls.append('    account key "/etc/acme/letsencrypt-staging-privkey.pem"')
+        cls.append('}')
+        cls.append('')
+        cls.append(f'domain {fqdn} {{')
+        cls.append(f'    domain key "/etc/ssl/private/{fqdn}.key"')
+        cls.append(f'    domain full chain certificate "/etc/ssl/{fqdn}.fullchain.pem"')
+        cls.append(f'    alternative names {" ".join(aliases)}')
+        if d.get("staging"):
+            self.logger.debug("using letsencypt's staging signer")
+            cls.append('    sign with letsencrypt-staging"')
+            cls.append('    #sign with letsencrypt')
+        else:
+            cls.append('    sign with letsencrypt')
+        cls.append('}')
+
+        sls = []
+        sls.append('#!/bin/ksh')
+        sls.append('')
+        sls.append('daemon="/usr/sbin/acme-client"')
+        sls.append('daemon_logger=daemon.info')
+        sls.append(f'daemon_flags="-v {fqdn}"')
+        sls.append('')
+        sls.append('. /etc/rc.d/rc.subr')
+        sls.append('')
+        sls.append('rc_start() {')
+        sls.append('    rc_exec "${daemon} ${daemon_flags}"')
+        sls.append('    _ec=$?')
+        sls.append('    if [ _ec -eq 0 ] || [ _ec -eq 2 ]; then')
+        sls.append('        return 0')
+        sls.append('    fi')
+        sls.append('}')
+        sls.append('')
+        sls.append('rc_cmd $1')
+
+        return {
+            "files": [ {
+                    "lines": cls,
+                    "dst": "/etc/acme-client.conf",
+                }, {
+                    "lines": sls,
+                    "dst": "/etc/rc.d/acme",
+                    "mode": 0o555,
+                }
+            ]
+        }
 
 class Autoinstall:
     logger = logging.getLogger(f"{whoami}.autoinstall")
@@ -1120,14 +1190,13 @@ class Autoinstall:
             patches = []
             for n, p in spec.get("patch", {}).items():
                 if n == "rlib":
+                    rl = Rlib()
                     for k, v in p.items():
-                        if v is True:
-                            patches.append((k, rlib[k]))
-                        else:
-                            self.logger.warning(f"what do you mean: patch.{n}.{k} := {v}")
+                        patches.append((k, getattr(rl, k)(v)))
                 else:
                     patches.append((n, p))
 
+            self.logger.debug(f"patches: {patches}")
             for n, p in patches:
                 pkgs |= set(p.get("pkgs", []))
                 if p.get("pkg"):
@@ -1162,6 +1231,8 @@ class Autoinstall:
                     i = os.path.join(patch_prefix, n, f"{n}.install")
                     self.site_file(i, mode=0o744, bytes=bs)
                     installers.append(i)
+
+                self.rlib = Rlib()
 
             if pkgs:
                 self.logger.info(f"packages: {pkgs}")
