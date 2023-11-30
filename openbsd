@@ -877,10 +877,10 @@ class Rlib:
         cls.append(f'domain {fqdn} {{')
         cls.append(f'    domain key "/etc/ssl/private/{fqdn}.key"')
         cls.append(f'    domain full chain certificate "/etc/ssl/{fqdn}.fullchain.pem"')
-        cls.append(f'    alternative names {" ".join(aliases)}')
+        cls.append(f'    alternative names {{ {" ".join(aliases)} }}')
         if d.get("staging"):
             self.logger.debug("using letsencypt's staging signer")
-            cls.append('    sign with letsencrypt-staging"')
+            cls.append('    sign with letsencrypt-staging')
             cls.append('    #sign with letsencrypt')
         else:
             cls.append('    sign with letsencrypt')
@@ -914,7 +914,8 @@ class Rlib:
                     "dst": "/etc/rc.d/acme",
                     "mode": 0o555,
                 }
-            ]
+            ],
+            "service": "acme",
         }
 
 class Autoinstall:
