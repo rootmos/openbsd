@@ -851,72 +851,81 @@ class Rlib:
             } ],
         }
 
+    @classmethod
+    def acme_client(cls, fqdn, aliases=[], staging=False):
+        cls.logger.info(f"configuring acme-client; fqdn: {fqdn}")
+        cls.logger.debug(f"staging={staging}")
+
+        ls = []
+        ls.append('authority letsencrypt {')
+        ls.append('    api url "https://acme-v02.api.letsencrypt.org/directory"')
+        ls.append('    account key "/etc/acme/letsencrypt-privkey.pem"')
+        ls.append('}')
+        ls.append('')
+        ls.append('authority letsencrypt-staging {')
+        ls.append('    api url "https://acme-staging-v02.api.letsencrypt.org/directory"')
+        ls.append('    account key "/etc/acme/letsencrypt-staging-privkey.pem"')
+        ls.append('}')
+        ls.append('')
+        ls.append(f'domain {fqdn} {{')
+        ls.append(f'    domain key "/etc/ssl/private/{fqdn}.key"')
+        ls.append(f'    domain full chain certificate "/etc/ssl/{fqdn}.fullchain.pem"')
+
+        cls.logger.info(f"aliases: {aliases}")
+        ls.append(f'    alternative names {{ {" ".join(aliases)} }}')
+        if staging:
+            cls.logger.debug("using letsencypt's staging signer")
+            ls.append('    sign with letsencrypt-staging')
+            ls.append('    #sign with letsencrypt')
+        else:
+            ls.append('    sign with letsencrypt')
+        ls.append('}')
+
+        return ls
+
+    @staticmethod
+    def acme_service(cls, fqdn):
+        cls.logger.debug(f"configuring acme service; fqdn: {fqdn}")
+
+        ls = []
+        ls.append('#!/bin/ksh')
+        ls.append('')
+        ls.append('daemon="/usr/sbin/acme-client"')
+        ls.append('daemon_logger=daemon.info')
+        ls.append(f'daemon_flags="-v {fqdn}"')
+        ls.append('')
+        ls.append('. /etc/rc.d/rc.subr')
+        ls.append('')
+        ls.append('rc_start() {')
+        ls.append('    rc_exec "${daemon} ${daemon_flags}"')
+        ls.append('    _ec=$?')
+        ls.append('    if [ _ec -eq 0 ] || [ _ec -eq 2 ]; then')
+        ls.append('        return 0')
+        ls.append('    fi')
+        ls.append('}')
+        ls.append('')
+        ls.append('rc_cmd $1')
+
+        return {
+            "lines": ls,
+            "dst": "/etc/rc.d/acme",
+            "mode": 0o555,
+            "service": "acme",
+        }
+
     def acme(self, d):
         fqdn = d["fqdn"]
-        tld_pattern = re.compile(r"\.\*$")
 
+        tld_pattern = re.compile(r"\.\*$")
         aliases = set()
         for a in d.get("alias", []):
             for tld in d.get("tld", []):
                 aliases.add(tld_pattern.sub("." + tld, a))
 
-        self.logger.info(f"fqdn: {fqdn}")
-        self.logger.info(f"alias: {' '.join(aliases)}")
-
-        cls = []
-        cls.append('authority letsencrypt {')
-        cls.append('    api url "https://acme-v02.api.letsencrypt.org/directory"')
-        cls.append('    account key "/etc/acme/letsencrypt-privkey.pem"')
-        cls.append('}')
-        cls.append('')
-        cls.append('authority letsencrypt-staging {')
-        cls.append('    api url "https://acme-staging-v02.api.letsencrypt.org/directory"')
-        cls.append('    account key "/etc/acme/letsencrypt-staging-privkey.pem"')
-        cls.append('}')
-        cls.append('')
-        cls.append(f'domain {fqdn} {{')
-        cls.append(f'    domain key "/etc/ssl/private/{fqdn}.key"')
-        cls.append(f'    domain full chain certificate "/etc/ssl/{fqdn}.fullchain.pem"')
-        cls.append(f'    alternative names {{ {" ".join(aliases)} }}')
-        if d.get("staging"):
-            self.logger.debug("using letsencypt's staging signer")
-            cls.append('    sign with letsencrypt-staging')
-            cls.append('    #sign with letsencrypt')
-        else:
-            cls.append('    sign with letsencrypt')
-        cls.append('}')
-
-        sls = []
-        sls.append('#!/bin/ksh')
-        sls.append('')
-        sls.append('daemon="/usr/sbin/acme-client"')
-        sls.append('daemon_logger=daemon.info')
-        sls.append(f'daemon_flags="-v {fqdn}"')
-        sls.append('')
-        sls.append('. /etc/rc.d/rc.subr')
-        sls.append('')
-        sls.append('rc_start() {')
-        sls.append('    rc_exec "${daemon} ${daemon_flags}"')
-        sls.append('    _ec=$?')
-        sls.append('    if [ _ec -eq 0 ] || [ _ec -eq 2 ]; then')
-        sls.append('        return 0')
-        sls.append('    fi')
-        sls.append('}')
-        sls.append('')
-        sls.append('rc_cmd $1')
-
-        return {
-            "files": [ {
-                    "lines": cls,
-                    "dst": "/etc/acme-client.conf",
-                }, {
-                    "lines": sls,
-                    "dst": "/etc/rc.d/acme",
-                    "mode": 0o555,
-                }
-            ],
-            "service": "acme",
-        }
+        return [
+            self.acme_client(fqdn=fqdn, aliases=aliases, staging=d.get("staging")),
+            self.acme_service(fqdn=fqdn),
+        ]
 
 class Autoinstall:
     logger = logging.getLogger(f"{whoami}.autoinstall")
@@ -1232,8 +1241,6 @@ class Autoinstall:
                     i = os.path.join(patch_prefix, n, f"{n}.install")
                     self.site_file(i, mode=0o744, bytes=bs)
                     installers.append(i)
-
-                self.rlib = Rlib()
 
             if pkgs:
                 self.logger.info(f"packages: {pkgs}")
