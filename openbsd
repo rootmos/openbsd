@@ -832,9 +832,9 @@ class Rlib:
     def doas(self, d):
         return {
             "files": [ {
-                   "lines": [ "permit nopass :wheel" ],
-                   "mode": 0o400,
-                   "dst": "/etc/doas.conf",
+                "lines": [ "permit nopass :wheel" ],
+                "mode": 0o400,
+                "dst": "/etc/doas.conf",
             } ],
         }
 
@@ -865,13 +865,13 @@ class Rlib:
         ls.append('     }')
         ls.append('}')
 
-        return {
+        return ("httpd", {
             "files": [ {
-                "src": ls,
+                "lines": ls,
                 "dst": "/etc/httpd.conf",
             } ],
             "service": "httpd",
-        }
+        })
 
     @classmethod
     def acme_client(cls, fqdn, aliases=[], staging=False):
@@ -903,9 +903,16 @@ class Rlib:
             ls.append('    sign with letsencrypt')
         ls.append('}')
 
-        return ls
+        d = {
+            "files": [ {
+                "lines": ls,
+                "dst": "/etc/acme-client.conf",
+            } ],
+        }
+        cls.logger.debug(f"acme_client={d}")
+        return ("acme_client", d)
 
-    @staticmethod
+    @classmethod
     def acme_service(cls, fqdn):
         cls.logger.debug(f"configuring acme service; fqdn: {fqdn}")
 
@@ -928,12 +935,16 @@ class Rlib:
         ls.append('')
         ls.append('rc_cmd $1')
 
-        return {
-            "lines": ls,
-            "dst": "/etc/rc.d/acme",
-            "mode": 0o555,
+        d = {
+            "files": [ {
+                "lines": ls,
+                "dst": "/etc/rc.d/acme",
+                "mode": 0o555,
+            } ],
             "service": "acme",
         }
+        cls.logger.debug(f"acme_service={d}")
+        return ("acme_service", d)
 
     def acme(self, d):
         fqdn = d["fqdn"]
@@ -1221,16 +1232,21 @@ class Autoinstall:
             installers = []
 
             patches = []
+            rl = Rlib()
             for n, p in spec.get("patch", {}).items():
                 if n == "rlib":
-                    rl = Rlib()
                     for k, v in p.items():
-                        patches.append((k, getattr(rl, k)(v)))
+                        x = getattr(rl, k)(v)
+                        if isinstance(x, list):
+                            patches += x
+                        else:
+                            patches.append((k, x))
                 else:
                     patches.append((n, p))
 
             self.logger.debug(f"patches: {patches}")
             for n, p in patches:
+                print(json.dumps(p, indent=2))
                 pkgs |= set(p.get("pkgs", []))
                 if p.get("pkg"):
                     pkgs.add(p.get("pkg"))
