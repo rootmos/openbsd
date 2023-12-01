@@ -852,6 +852,28 @@ class Rlib:
         }
 
     @classmethod
+    def httpd(cls, fqdn):
+        ls = []
+        ls.append(f'server "{fqdn}" {{')
+        ls.append('     listen on * port 80')
+        ls.append('     location "/.well-known/acme-challenge/*" {')
+        ls.append('             root "/acme"')
+        ls.append('             request strip 2')
+        ls.append('     }')
+        ls.append('     location * {')
+        ls.append('             block return 302 "https://$HTTP_HOST$REQUEST_URI"')
+        ls.append('     }')
+        ls.append('}')
+
+        return {
+            "files": [ {
+                "src": ls,
+                "dst": "/etc/httpd.conf",
+            } ],
+            "service": "httpd",
+        }
+
+    @classmethod
     def acme_client(cls, fqdn, aliases=[], staging=False):
         cls.logger.info(f"configuring acme-client; fqdn: {fqdn}")
         cls.logger.debug(f"staging={staging}")
@@ -923,6 +945,7 @@ class Rlib:
                 aliases.add(tld_pattern.sub("." + tld, a))
 
         return [
+            self.httpd(fqdn=fqdn),
             self.acme_client(fqdn=fqdn, aliases=aliases, staging=d.get("staging")),
             self.acme_service(fqdn=fqdn),
         ]
