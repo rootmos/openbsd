@@ -1796,8 +1796,6 @@ class Run:
 
     def wrap(self, cmd, path=None, **kwargs):
         p = path or os.path.join(self.workdir.name, cmd)
-        if os.path.exists(p):
-            return p
 
         if cmd == "ssh":
             cmdline = self.ssh_cmdline(**kwargs)
