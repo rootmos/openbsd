@@ -909,7 +909,6 @@ class Rlib:
                 "dst": "/etc/acme-client.conf",
             } ],
         }
-        cls.logger.debug(f"acme_client={d}")
         return ("acme_client", d)
 
     @classmethod
@@ -943,7 +942,6 @@ class Rlib:
             } ],
             "service": "acme",
         }
-        cls.logger.debug(f"acme_service={d}")
         return ("acme_service", d)
 
     def acme(self, d):
@@ -1246,7 +1244,6 @@ class Autoinstall:
 
             self.logger.debug(f"patches: {patches}")
             for n, p in patches:
-                print(json.dumps(p, indent=2))
                 pkgs |= set(p.get("pkgs", []))
                 if p.get("pkg"):
                     pkgs.add(p.get("pkg"))
