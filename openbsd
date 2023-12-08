@@ -941,6 +941,9 @@ class Rlib:
                 "mode": 0o555,
             } ],
             "service": "acme",
+            "install": [
+                f'echo "acme-client -v {fqdn}" >> /etc/monthly.local',
+            ],
         }
         return ("acme_service", d)
 
