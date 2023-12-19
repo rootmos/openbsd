@@ -747,10 +747,8 @@ class Qemu:
                 haddr = socket.gethostbyname(haddr) if haddr else ''
                 nic += [ f"hostfwd={prot or ''}:{haddr}:{hport}-{gaddr or ''}:{gport}" ]
 
-            for (gprot, gaddr, gport), (hprot, haddr, hport) in qemu.guestfwd:
-                if (gprot, hprot) != ("tcp", "tcp"):
-                    raise NotImplementedError
-                nic += [ f"guestfwd={gprot}:{gaddr}:{gport}-cmd:{' '.join(situation.socat)} - tcp:{haddr}:{hport}" ]
+            for (prot, gaddr, gport), (haddr, hport) in qemu.guestfwd:
+                nic += [ f"guestfwd={prot}:{gaddr}:{gport}-cmd:{' '.join(situation.socat)} - {prot}:{haddr}:{hport}" ]
 
             self.cmdline += [ "-nic", ",".join(nic) ]
 
@@ -1316,7 +1314,7 @@ class Autoinstall:
             self.qemu.hostname = spec.get("hostname", spec.app)
             self.qemu.domainname = spec.get("domainname", "localhost")
             self.qemu.restrict_network = True
-        self.qemu.guestfwd.append((("tcp", http_internal_ip, 80), ("tcp", self.httpd.address, self.httpd.port)))
+        self.qemu.guestfwd.append((("tcp", http_internal_ip, 80), (self.httpd.address, self.httpd.port)))
         self.qemu.serial = Qemu.UNIX
 
         encoded_error_token = ''.join([f"\\0{ord(s):o}" for s in error_token])
@@ -1730,6 +1728,17 @@ class Run:
             add_hostfwd("tcp", hostfwd)
         for hostfwd in self.spec.get("hostfwd", {}).get("udp", []):
             add_hostfwd("udp", hostfwd)
+
+        def add_guestfwd(prot, guestfwd):
+            haddr, hport = guestfwd.get("haddr", "0.0.0.0"), guestfwd.get("hport", utils.random_ephemeral_port())
+            gaddr, gport = guestfwd.get("gaddr", None), guestfwd["gport"]
+            self.logger.info(f"guest port forward: ({prot}, {gaddr}, {hport}) -> ({haddr}, {hport})")
+            self.qemu.guestfwd.append(((prot, gaddr, gport), (haddr, hport)))
+
+        for guestfwd in self.spec.get("guestfwd", {}).get("tcp", []):
+            add_guestfwd("tcp", guestfwd)
+        for guestfwd in self.spec.get("guestfwd", {}).get("udp", []):
+            add_guestfwd("udp", guestfwd)
 
         self.ssh_pubkeys = {}
         self.has_ssh_pubkey = asyncio.Event()
