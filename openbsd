@@ -922,12 +922,27 @@ class Rlib:
         ls.append('')
         ls.append('. /etc/rc.d/rc.subr')
         ls.append('')
+
         ls.append('rc_start() {')
-        ls.append('    rc_exec "${daemon} ${daemon_flags}"')
-        ls.append('    _ec=$?')
-        ls.append('    if [ _ec -eq 0 ] || [ _ec -eq 2 ]; then')
-        ls.append('        return 0')
-        ls.append('    fi')
+        ls.append('   if [ -x "/etc/acme.pre" ]; then')
+        ls.append('       rc_exec "/etc/acme.pre"; _ret=$?')
+        ls.append('       if [[ ${_ret} != 0 ]]; then')
+        ls.append('           return ${_ret}')
+        ls.append('       fi')
+        ls.append('   fi')
+        ls.append('')
+        ls.append('   rc_exec "${daemon} ${daemon_flags}"; _ret=$?')
+        ls.append('   ')
+        ls.append('   if [[ ${_ret} == 0 ]]; then')
+        ls.append('       if [ -x "/etc/acme.post" ]; then')
+        ls.append('           rc_exec "/etc/acme.post"; _ret=$?')
+        ls.append('           return ${_ret}')
+        ls.append('       fi')
+        ls.append('   elif [[ ${_ret} == 2 ]]; then')
+        ls.append('       return 0')
+        ls.append('   else')
+        ls.append('       return ${_ret}')
+        ls.append('   fi')
         ls.append('}')
         ls.append('')
         ls.append('rc_cmd $1')
@@ -940,7 +955,7 @@ class Rlib:
             } ],
             "service": "acme",
             "install": [
-                f'echo "acme-client -v {fqdn}" >> /etc/monthly.local',
+                f'echo "rcctl run acme" >> /etc/monthly.local',
             ],
         }
         return ("acme_service", d)
