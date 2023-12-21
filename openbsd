@@ -918,6 +918,7 @@ class Rlib:
         ls.append('')
         ls.append('daemon="/usr/sbin/acme-client"')
         ls.append('daemon_logger=daemon.info')
+        ls.append('daemon_timeout=300')
         ls.append(f'daemon_flags="-v {fqdn}"')
         ls.append('')
         ls.append('. /etc/rc.d/rc.subr')
