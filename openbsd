@@ -77,20 +77,19 @@ class Version:
             return DEFAULT_VERSION
         return cls.versions.get(version)
 
-Version.add(
-    version = "7.3",
+DEFAULT_VERSION = Version.add(
+    version = "7.5",
     pub = lines(
-        "untrusted comment: openbsd 7.3 public key",
-        "RWQS90bYzZ4XFms5z9OodrFABHMQnW6htU+4Tmp88NuQiTEezMm2cQ3K",
+        "untrusted comment: openbsd 7.5 public key",
+        "RWRGj1pRpprAfgeF/rgld4ubduChLvTkigA1Zj7WLDsVA4qfYSWOEI8q",
     ),
     archs = {
-        "amd64": "d04aa5c346a7e327469119072137c393d4412979f9e6f950c144e99a36c812b4",
-        "i386": "304f0fa30f24aac031a625e6e7e8b72d3be3f9b19df0d60976888927aa663741",
-        "arm64": "da8cc4eb51499989e4f073726f06b8070ea125266bf60be95833779a1061810e",
+        "amd64": "2b368dc0f2f486ffd04161db1898f7cdcf84dec9f2c0fe4db1b75dd69f979db7",
+        "i386": "0601f4561a479094b24c9d72176a6bba027af55cb92ecd3f5fea9ac6dbe6c803",
     },
 )
 
-DEFAULT_VERSION = Version.add(
+Version.add(
     version = "7.4",
     pub = lines(
         "untrusted comment: openbsd 7.4 public key",
@@ -101,6 +100,19 @@ DEFAULT_VERSION = Version.add(
         "i386": "71c0db5485581bff928c181389252ee797f8c1cac4b03887bba789b57c16fe73",
         "arm64": "e405804581305a997f804cc7c1551f1aec72889a07c422480b0ec06ff266b1df",
         "armv7": "37bb99ba6fb8e1d326e5ea2e596df5749c0cd3ca4ede8230ab62f308b1fd5995",
+    },
+)
+
+Version.add(
+    version = "7.3",
+    pub = lines(
+        "untrusted comment: openbsd 7.3 public key",
+        "RWQS90bYzZ4XFms5z9OodrFABHMQnW6htU+4Tmp88NuQiTEezMm2cQ3K",
+    ),
+    archs = {
+        "amd64": "d04aa5c346a7e327469119072137c393d4412979f9e6f950c144e99a36c812b4",
+        "i386": "304f0fa30f24aac031a625e6e7e8b72d3be3f9b19df0d60976888927aa663741",
+        "arm64": "da8cc4eb51499989e4f073726f06b8070ea125266bf60be95833779a1061810e",
     },
 )
 
