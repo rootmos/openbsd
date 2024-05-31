@@ -959,7 +959,7 @@ class Rlib:
             } ],
             "service": "acme",
             "install": [
-                f'echo "rcctl run acme" >> /etc/monthly.local',
+                f'echo "rcctl start acme" >> /etc/monthly.local',
             ],
         }
         return ("acme_service", d)
