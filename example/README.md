@@ -2,7 +2,6 @@
 
 ```toml
 app = "foo"
-version = "7.4"
 arch = "amd64"
 ```
 
