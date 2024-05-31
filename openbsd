@@ -1835,6 +1835,9 @@ class AWS:
         self.logger.info(f"snapshot import: s3://{bucket}/{key} -> {si}")
         return si
 
+    def describe_snapshot(self, si):
+        return self.ec2.describe_snapshots(SnapshotIds=[si])["Snapshots"][0]
+
     def ami_cmd(self, args):
         aws = Spec.from_args(args, "aws")
         ami_spec = aws["ami"]
@@ -1928,6 +1931,7 @@ class AWS:
             default_resource_label = "%APP-%OS-%VERSION-%SALT"
             ami = render_template(tf.get("aws_ami", default_resource_label))
             snap = render_template(tf.get("aws_ebs_snapshot", default_resource_label))
+            snap_description = self.describe_snapshot(si)
             i = ' '*tf.get("indent", 2)
 
             tag_lines = [ f'{i}tags = {{' ] + [ f'{i}{i}{k} = "{v}"' for k, v in tags.items() ] + [ f'{i}}}' ]
@@ -1970,7 +1974,8 @@ class AWS:
                 f'}}',
                 f'',
                 f'resource "aws_ebs_snapshot" "{snap}" {{',
-                f'  volume_id = "vol-ffffffff"',
+                f'  volume_id = "{snap_description["VolumeId"]}"',
+                f'  description = "{snap_description["Description"]}"',
             ] + tag_lines + [
                 f'}}',
             ]
