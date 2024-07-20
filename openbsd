@@ -986,7 +986,6 @@ class Rlib:
                 aliases.add(tld_pattern.sub("." + tld, a))
 
         return [
-            self.httpd(fqdn=fqdn),
             self.acme_client(fqdn=fqdn, aliases=aliases, staging=d.get("staging")),
             self.acme_service(fqdn=fqdn),
         ]
