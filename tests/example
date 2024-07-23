@@ -28,6 +28,9 @@ while ! [ -f "ssh" ]; do
     echo 1>&2 "waiting for boot..."
 done
 
+./ssh -- doas rcctl check nginx
+./ssh -- doas rcctl configtest nginx
+
 HTTP=http://localhost:8000
 
 echo 1>&2 "testing $HTTP"
