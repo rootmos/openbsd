@@ -6,6 +6,7 @@ on:
     workflows: [ Sanity checks ]
     types: [ completed ]
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deps:
