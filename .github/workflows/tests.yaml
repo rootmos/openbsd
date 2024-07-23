@@ -100,7 +100,7 @@ jobs:
 
     steps:
     - name: Install essentials
-      run: apk add bash python3 tar
+      run: apk add bash python3 tar wget
 
     - name: Check out repository code
       uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
           openbsd
 
     - name: Run test
-      run: tests/example -v ${{ matrix.version }} -a ${{ matrix.arch }}
+      run: timeout 1800 tests/example -v ${{ matrix.version }} -a ${{ matrix.arch }}
 
     - name: Keep artifacts
       uses: actions/upload-artifact@v4
