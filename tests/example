@@ -33,7 +33,7 @@ echo 1>&2 "netstat guest:"
 echo 1>&2 "netstat host:"
 netstat -l
 
-HTTP=http://localhost:8000
+HTTP=http://127.0.0.1:8000
 
 echo 1>&2 "testing $HTTP"
 INDEX="index.html"
