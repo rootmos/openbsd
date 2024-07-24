@@ -68,7 +68,6 @@ dst = "/etc/rc.d/echoip"
 sshd.port = 21230
 
 [[run.hostfwd.tcp]]
-haddr = "localhost"
 hport = 8000
 gport = 80
 ```

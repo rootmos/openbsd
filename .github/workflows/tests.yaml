@@ -9,84 +9,84 @@ on:
   workflow_dispatch:
 
 jobs:
-#  deps:
-#    strategy:
-#      matrix:
-#        distro: [ "alpine:latest", "ubuntu:latest", "debian:latest", "archlinux:latest" ]
-#        arch: [ amd64, i386 ]
-#    runs-on: ubuntu-latest
-#    container:
-#      image: ${{ matrix.distro }}
-#    steps:
-#    - name: Install essentials
-#      run: |
-#        if [ "${{ matrix.distro }}" = "alpine:latest" ]; then
-#            apk add python3
-#        elif [ "${{ matrix.distro }}" = "archlinux:latest" ]; then
-#            pacman -Sy
-#            pacman -S --noconfirm python
-#        else
-#            apt-get update
-#            apt-get install --yes --no-install-recommends python3
-#        fi
-#
-#    - name: Check out repository code
-#      uses: actions/checkout@v4
-#
-#    - name: Install dependencies
-#      run: ./openbsd deps --install --arch=${{ matrix.arch }}
-#
-#  base:
-#    needs:
-#      - deps
-#    strategy:
-#      matrix:
-#        version: [ 7.3, 7.4, 7.5 ]
-#        arch: [ amd64, i386 ]
-#    runs-on: ubuntu-latest
-#    container:
-#      image: alpine:latest
-#    env:
-#      OPENBSD_CACHE: /tmp/cache
-#      WORKDIR: /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
-#    steps:
-#    - name: Install essentials
-#      run: apk add bash python3 tar
-#
-#    - name: Check out repository code
-#      uses: actions/checkout@v4
-#
-#    - name: Install dependencies
-#      run: ./openbsd deps --install --arch=${{ matrix.arch }}
-#
-#    - name: Cache OpenBSD files
-#      id: cache-openbsd
-#      uses: actions/cache@v4
-#      with:
-#        path: ${{ env.OPENBSD_CACHE }}
-#        key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-#        restore-keys: |
-#          openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-#          openbsd-${{ matrix.version }}-${{ matrix.arch }}
-#          openbsd-${{ matrix.version }}
-#          openbsd
-#
-#    - name: Run test
-#      run: tests/base -v ${{ matrix.version }} -a ${{ matrix.arch }}
-#
-#    - name: Keep artifacts
-#      uses: actions/upload-artifact@v4
-#      if: always()
-#      with:
-#        name: ${{ github.job }}-${{ matrix.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
-#        retention-days: 3
-#        path: |
-#          /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
-#          !/**/*.img
+  deps:
+    strategy:
+      matrix:
+        distro: [ "alpine:latest", "ubuntu:latest", "debian:latest", "archlinux:latest" ]
+        arch: [ amd64, i386 ]
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.distro }}
+    steps:
+    - name: Install essentials
+      run: |
+        if [ "${{ matrix.distro }}" = "alpine:latest" ]; then
+            apk add python3
+        elif [ "${{ matrix.distro }}" = "archlinux:latest" ]; then
+            pacman -Sy
+            pacman -S --noconfirm python
+        else
+            apt-get update
+            apt-get install --yes --no-install-recommends python3
+        fi
+
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: ./openbsd deps --install --arch=${{ matrix.arch }}
+
+  base:
+    needs:
+      - deps
+    strategy:
+      matrix:
+        version: [ 7.3, 7.4, 7.5 ]
+        arch: [ amd64, i386 ]
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+    env:
+      OPENBSD_CACHE: /tmp/cache
+      WORKDIR: /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
+    steps:
+    - name: Install essentials
+      run: apk add bash python3 tar
+
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: ./openbsd deps --install --arch=${{ matrix.arch }}
+
+    - name: Cache OpenBSD files
+      id: cache-openbsd
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.OPENBSD_CACHE }}
+        key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+        restore-keys: |
+          openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+          openbsd-${{ matrix.version }}-${{ matrix.arch }}
+          openbsd-${{ matrix.version }}
+          openbsd
+
+    - name: Run test
+      run: tests/base -v ${{ matrix.version }} -a ${{ matrix.arch }}
+
+    - name: Keep artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ${{ github.job }}-${{ matrix.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
+        retention-days: 3
+        path: |
+          /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
+          !/**/*.img
 
   example:
-#    needs:
-#      - base
+    needs:
+      - base
     strategy:
       matrix:
         version: [ 7.5 ]
@@ -100,7 +100,7 @@ jobs:
 
     steps:
     - name: Install essentials
-      run: apk add bash python3 tar net-tools
+      run: apk add bash python3 tar wget
 
     - name: Check out repository code
       uses: actions/checkout@v4
