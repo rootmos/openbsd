@@ -2006,7 +2006,13 @@ class AWS:
         iid = is_rsp["ImportTaskId"]
         self.logger.debug(f"waiting for snapshot import to complete: {iid}")
 
-        self.ec2.get_waiter("snapshot_imported").wait(ImportTaskIds=[iid])
+        self.ec2.get_waiter("snapshot_imported").wait(
+            ImportTaskIds=[iid],
+            WaiterConfig={
+                'Delay': 30,
+                'MaxAttempts': 80,
+            },
+        )
 
         dist_rsp = self.ec2.describe_import_snapshot_tasks(ImportTaskIds=[iid])
         si = None
