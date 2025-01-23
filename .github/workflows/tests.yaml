@@ -6,6 +6,7 @@ on:
     workflows: [ Sanity checks ]
     types: [ completed ]
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deps:
@@ -40,7 +41,7 @@ jobs:
       - deps
     strategy:
       matrix:
-        version: [ 7.3, 7.4, 7.5 ]
+        version: [ 7.3, 7.4, 7.5, 7.6 ]
         arch: [ amd64, i386 ]
     runs-on: ubuntu-latest
     container:
@@ -88,7 +89,7 @@ jobs:
       - base
     strategy:
       matrix:
-        version: [ 7.5 ]
+        version: [ 7.6 ]
         arch: [ amd64 ]
     runs-on: ubuntu-latest
     env:
@@ -99,7 +100,7 @@ jobs:
 
     steps:
     - name: Install essentials
-      run: apk add bash python3 tar
+      run: apk add bash python3 tar wget
 
     - name: Check out repository code
       uses: actions/checkout@v4
@@ -120,7 +121,7 @@ jobs:
           openbsd
 
     - name: Run test
-      run: tests/example -v ${{ matrix.version }} -a ${{ matrix.arch }}
+      run: timeout 1800 tests/example -v ${{ matrix.version }} -a ${{ matrix.arch }}
 
     - name: Keep artifacts
       uses: actions/upload-artifact@v4
