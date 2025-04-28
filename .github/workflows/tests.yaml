@@ -84,6 +84,7 @@ jobs:
     - name: Run test
       run: tests/base -v ${{ matrix.release.version }} -a ${{ matrix.arch }}
       env:
+        OPENBSD_LOG_LEVEL: DEBUG
         OPENBSD_MIRROR: ${{ matrix.release.mirror }}
 
     - name: Keep artifacts
