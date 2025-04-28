@@ -41,7 +41,17 @@ jobs:
       - deps
     strategy:
       matrix:
-        version: [ 7.3, 7.4, 7.5, 7.6, 7.7 ]
+        release:
+          - version: 7.7
+            mirror: "https://cdn.openbsd.org/pub/OpenBSD"
+          - version: 7.6
+            mirror: "https://cdn.openbsd.org/pub/OpenBSD"
+          - version: 7.5
+            mirror: "https://mirror.leaseweb.com/pub/OpenBSD"
+          - version: 7.4
+            mirror: "https://mirror.leaseweb.com/pub/OpenBSD"
+          - version: 7.3
+            mirror: "https://mirror.leaseweb.com/pub/OpenBSD"
         arch: [ amd64, i386 ]
     runs-on: ubuntu-latest
     container:
@@ -64,21 +74,23 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.OPENBSD_CACHE }}
-        key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
+        key: openbsd-${{ matrix.release.version }}-${{ matrix.arch }}-${{ github.job }}
         restore-keys: |
-          openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
-          openbsd-${{ matrix.version }}-${{ matrix.arch }}
-          openbsd-${{ matrix.version }}
+          openbsd-${{ matrix.release.version }}-${{ matrix.arch }}-${{ github.job }}
+          openbsd-${{ matrix.release.version }}-${{ matrix.arch }}
+          openbsd-${{ matrix.release.version }}
           openbsd
 
     - name: Run test
-      run: tests/base -v ${{ matrix.version }} -a ${{ matrix.arch }}
+      run: tests/base -v ${{ matrix.release.version }} -a ${{ matrix.arch }}
+      env:
+        OPENBSD_MIRROR: ${{ matrix.release.mirror }}
 
     - name: Keep artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: ${{ github.job }}-${{ matrix.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
+        name: ${{ github.job }}-${{ matrix.release.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
         retention-days: 3
         path: |
           /${{github.job}}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}/**/*
