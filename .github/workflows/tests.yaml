@@ -47,11 +47,11 @@ jobs:
           - version: 7.6
             mirror: "https://cdn.openbsd.org/pub/OpenBSD"
           - version: 7.5
-            mirror: "https://mirror.leaseweb.com/pub/OpenBSD"
+            mirror: "https://ftp.lysator.liu.se/pub/OpenBSD"
           - version: 7.4
-            mirror: "https://mirror.leaseweb.com/pub/OpenBSD"
+            mirror: "https://ftp.lysator.liu.se/pub/OpenBSD"
           - version: 7.3
-            mirror: "https://mirror.leaseweb.com/pub/OpenBSD"
+            mirror: "https://ftp.lysator.liu.se/pub/OpenBSD"
         arch: [ amd64, i386 ]
     runs-on: ubuntu-latest
     container:
