@@ -5,7 +5,7 @@ on:
   workflow_run:
     workflows: [ Sanity checks ]
     types: [ completed ]
-    branches: [ main ]
+    branches: [ main, openbsd77 ]
   workflow_dispatch:
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
       - deps
     strategy:
       matrix:
-        version: [ 7.3, 7.4, 7.5, 7.6 ]
+        version: [ 7.3, 7.4, 7.5, 7.6, 7.7 ]
         arch: [ amd64, i386 ]
     runs-on: ubuntu-latest
     container:
@@ -89,7 +89,7 @@ jobs:
       - base
     strategy:
       matrix:
-        version: [ 7.6 ]
+        version: [ 7.7 ]
         arch: [ amd64 ]
     runs-on: ubuntu-latest
     env:
