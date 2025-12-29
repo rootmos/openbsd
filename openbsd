@@ -78,6 +78,18 @@ class Version:
         return cls.versions.get(version)
 
 DEFAULT_VERSION = Version.add(
+    version = "7.8",
+    pub = lines(
+        "untrusted comment: openbsd 7.8 base public key",
+        "RWS3/nvFmk4SWSmt/5QIk9yB4+uoAGoiYvFhVlDQBG3rWENeeIys0LWB",
+    ),
+    archs = {
+        "amd64": "d26987d8c2f8f31a0e047eb89f3248f4c6867f3361952e1ea5378efd26acddd4",
+        "i386": "bc60e24e03130b2a8c51fc209dd13b838fddbaae7fc42e34d8a0238094faf147",
+    },
+)
+
+Version.add(
     version = "7.7",
     pub = lines(
         "untrusted comment: openbsd 7.7 base public key",
