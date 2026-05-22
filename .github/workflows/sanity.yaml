@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out repository code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: The example's specification is clean
       run: scripts/is-clean example/openbsd.toml
@@ -23,7 +23,7 @@ jobs:
       run: apk add python3
 
     - name: Check out repository code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Script is footloose and fancy-free
       run: scripts/load_module.py openbsd

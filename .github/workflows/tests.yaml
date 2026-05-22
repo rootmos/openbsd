@@ -31,7 +31,7 @@ jobs:
         fi
 
     - name: Check out repository code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Install dependencies
       run: ./openbsd deps --install --arch=${{ matrix.arch }}
@@ -68,14 +68,14 @@ jobs:
       run: apk add bash python3 tar
 
     - name: Check out repository code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Install dependencies
       run: ./openbsd deps --install --arch=${{ matrix.arch }}
 
     - name: Cache OpenBSD files
       id: cache-openbsd
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ env.OPENBSD_CACHE }}
         key: openbsd-${{ matrix.release.version }}-${{ matrix.arch }}-${{ github.job }}
@@ -91,7 +91,7 @@ jobs:
         OPENBSD_MIRROR: ${{ matrix.release.mirror }}
 
     - name: Keep artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: ${{ github.job }}-${{ matrix.release.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
@@ -119,14 +119,14 @@ jobs:
       run: apk add bash python3 tar wget
 
     - name: Check out repository code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Install dependencies
       run: ./openbsd deps --install --arch=${{ matrix.arch }}
 
     - name: Cache OpenBSD files
       id: cache-openbsd
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ env.OPENBSD_CACHE }}
         key: openbsd-${{ matrix.version }}-${{ matrix.arch }}-${{ github.job }}
@@ -140,7 +140,7 @@ jobs:
       run: timeout 1800 tests/example -v ${{ matrix.version }} -a ${{ matrix.arch }}
 
     - name: Keep artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: ${{ github.job }}-${{ matrix.version }}-${{ matrix.arch }}-${{github.run_id}}-${{github.run_number}}-${{github.run_attempt}}
