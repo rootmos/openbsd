@@ -42,6 +42,8 @@ jobs:
     strategy:
       matrix:
         release:
+          - version: 7.9
+            mirror: "https://cdn.openbsd.org/pub/OpenBSD"
           - version: 7.8
             mirror: "https://cdn.openbsd.org/pub/OpenBSD"
           - version: 7.7
@@ -103,7 +105,7 @@ jobs:
       - base
     strategy:
       matrix:
-        version: [ 7.8 ]
+        version: [ 7.9 ]
         arch: [ amd64 ]
     runs-on: ubuntu-latest
     env:
